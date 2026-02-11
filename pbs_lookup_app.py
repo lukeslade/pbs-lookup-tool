@@ -329,6 +329,9 @@ def display_item_details(item_data, schedule_code=None):
                  'N/A')
     
     # Get restriction code and fetch actual text
+    st.write(f"DEBUG: All item data keys: {list(item_data.keys())}")
+    st.write(f"DEBUG: Full item data: {item_data}")
+    
     restriction_code = item_data.get('restriction_code')
     st.write(f"DEBUG: Item restriction_code field: {restriction_code}")
     st.write(f"DEBUG: Item res_code field: {item_data.get('res_code')}")
