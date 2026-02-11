@@ -90,110 +90,112 @@ def get_restriction_texts(pbs_code, schedule_code):
         
         st.write(f"DEBUG: Looking for {len(restriction_codes)} restriction codes: {restriction_codes}")
         
-        # Use filter to get specific restrictions - build OR query
-        # Try fetching in smaller batches to avoid rate limiting
+        # Fetch restrictions one by one with proper delays to avoid rate limiting
+        # This is the most reliable approach given the API constraints
         restriction_list = []
         
-        # Batch the restriction codes - fetch 2 at a time to stay under rate limit
-        batch_size = 2
-        for i in range(0, len(restriction_codes), batch_size):
-            batch = restriction_codes[i:i+batch_size]
-            
-            # Build filter for this batch using OR logic
-            filter_conditions = " OR ".join([f"res_code:eq:{code}" for code in batch])
+        import time
+        
+        for idx, res_code in enumerate(restriction_codes):
+            # Wait between requests (except first one)
+            if idx > 0:
+                wait_time = 5  # 5 seconds between each request
+                st.write(f"DEBUG: Waiting {wait_time} seconds before next request...")
+                time.sleep(wait_time)
             
             restrictions_url = f"{api_base}/restrictions"
             restrictions_params = {
+                'res_code': res_code,
                 'schedule_code': schedule_code,
-                'filter': filter_conditions,
-                'limit': 100
+                'limit': 10
             }
             
-            st.write(f"DEBUG: Fetching batch {i//batch_size + 1}: {batch}")
+            st.write(f"DEBUG: Fetching restriction {idx+1}/{len(restriction_codes)}: {res_code}")
             
             try:
-                import time
-                if i > 0:
-                    time.sleep(3.0)  # Wait between batches
-                
                 restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
                 
                 st.write(f"DEBUG: Response status: {restrictions_response.status_code}")
                 
+                # Handle rate limiting
                 if restrictions_response.status_code == 429:
-                    st.warning(f"Rate limited, waiting 15 seconds...")
-                    time.sleep(15.0)
+                    st.warning(f"Rate limited on {res_code}, waiting 30 seconds...")
+                    time.sleep(30.0)
                     restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
+                    st.write(f"DEBUG: Retry response status: {restrictions_response.status_code}")
                 
                 if restrictions_response.status_code == 200:
                     restrictions_data = restrictions_response.json()
                     
                     if isinstance(restrictions_data, dict) and 'data' in restrictions_data:
-                        batch_restrictions = restrictions_data['data']
+                        restrictions = restrictions_data['data']
                     elif isinstance(restrictions_data, list):
-                        batch_restrictions = restrictions_data
+                        restrictions = restrictions_data
                     else:
-                        st.write(f"DEBUG: Unexpected response format for batch")
+                        st.write(f"DEBUG: Unexpected response format")
                         continue
                     
-                    st.write(f"DEBUG: Found {len(batch_restrictions)} restrictions in this batch")
+                    if not restrictions or len(restrictions) == 0:
+                        st.write(f"DEBUG: No data found for {res_code}")
+                        continue
                     
-                    # Process each restriction in the batch
-                    for restriction in batch_restrictions:
-                        res_code = restriction.get('res_code', '')
+                    restriction = restrictions[0]
+                    
+                    # Get the text
+                    text = restriction.get('li_html_text') or restriction.get('schedule_html_text', '')
+                    
+                    if text:
+                        # Remove HTML tags and format nicely
+                        text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+                        text = text.replace('</p>', '\n\n').replace('<p>', '')
+                        text = text.replace('</li>', '\n').replace('<li>', '• ')
+                        text = text.replace('</div>', '\n').replace('<div>', '')
                         
-                        # Get the text
-                        text = restriction.get('li_html_text') or restriction.get('schedule_html_text', '')
+                        # Remove remaining HTML tags
+                        clean_text = re.sub('<[^<]+?>', '', text)
                         
-                        if text:
-                            # Remove HTML tags and format nicely
-                            text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
-                            text = text.replace('</p>', '\n\n').replace('<p>', '')
-                            text = text.replace('</li>', '\n').replace('<li>', '• ')
-                            text = text.replace('</div>', '\n').replace('<div>', '')
+                        # Clean up whitespace
+                        clean_text = re.sub(r'\n\s*\n\s*\n+', '\n\n', clean_text)
+                        clean_text = re.sub(r' +', ' ', clean_text)
+                        
+                        # Decode HTML entities
+                        clean_text = clean_text.replace('&nbsp;', ' ').replace('&amp;', '&')
+                        clean_text = clean_text.replace('&lt;', '<').replace('&gt;', '>')
+                        
+                        clean_text = clean_text.strip()
+                        
+                        if clean_text:
+                            treatment_phase = restriction.get('treatment_phase', '')
+                            authority_method = restriction.get('authority_method', '')
                             
-                            # Remove remaining HTML tags
-                            clean_text = re.sub('<[^<]+?>', '', text)
+                            # Create a descriptive label
+                            label_parts = []
+                            if treatment_phase:
+                                label_parts.append(treatment_phase)
+                            if authority_method:
+                                label_parts.append(f"({authority_method})")
                             
-                            # Clean up whitespace
-                            clean_text = re.sub(r'\n\s*\n\s*\n+', '\n\n', clean_text)
-                            clean_text = re.sub(r' +', ' ', clean_text)
+                            label = " - ".join(label_parts) if label_parts else res_code
                             
-                            # Decode HTML entities
-                            clean_text = clean_text.replace('&nbsp;', ' ').replace('&amp;', '&')
-                            clean_text = clean_text.replace('&lt;', '<').replace('&gt;', '>')
+                            st.write(f"DEBUG: ✓ Found restriction: {res_code} - {label}")
                             
-                            clean_text = clean_text.strip()
-                            
-                            if clean_text:
-                                treatment_phase = restriction.get('treatment_phase', '')
-                                authority_method = restriction.get('authority_method', '')
-                                
-                                # Create a descriptive label
-                                label_parts = []
-                                if treatment_phase:
-                                    label_parts.append(treatment_phase)
-                                if authority_method:
-                                    label_parts.append(f"({authority_method})")
-                                
-                                label = " - ".join(label_parts) if label_parts else res_code
-                                
-                                st.write(f"DEBUG: Found restriction: {res_code} - {label}")
-                                
-                                restriction_list.append({
-                                    'res_code': res_code,
-                                    'label': label,
-                                    'text': clean_text,
-                                    'treatment_phase': treatment_phase,
-                                    'authority_method': authority_method
-                                })
+                            restriction_list.append({
+                                'res_code': res_code,
+                                'label': label,
+                                'text': clean_text,
+                                'treatment_phase': treatment_phase,
+                                'authority_method': authority_method
+                            })
+                    else:
+                        st.write(f"DEBUG: No text in {res_code}")
                 else:
-                    st.write(f"DEBUG: Failed to fetch batch, status: {restrictions_response.status_code}")
+                    st.write(f"DEBUG: Failed to fetch {res_code}, status: {restrictions_response.status_code}")
                     
             except Exception as e:
-                st.write(f"DEBUG: Error fetching batch: {str(e)}")
+                st.write(f"DEBUG: Error with {res_code}: {str(e)}")
                 continue
         
+        st.write(f"DEBUG: Total restrictions found: {len(restriction_list)}")
         return restriction_list
         
     except Exception as e:
