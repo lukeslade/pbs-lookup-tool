@@ -67,7 +67,7 @@ def get_restriction_texts(pbs_code, schedule_code):
         response = requests.get(url, headers=get_headers(), params=params, timeout=30)
         
         if response.status_code != 200:
-            return None
+            return []
         
         data = response.json()
         
@@ -77,16 +77,16 @@ def get_restriction_texts(pbs_code, schedule_code):
         elif isinstance(data, list):
             relationships = data
         else:
-            return None
+            return []
         
         if not relationships:
-            return None
+            return []
         
         # Get all unique restriction codes
         restriction_codes = list(set([r.get('res_code') for r in relationships if r.get('res_code')]))
         
         if not restriction_codes:
-            return None
+            return []
         
         # Fetch all restrictions for this schedule in one call
         restrictions_url = f"{api_base}/restrictions"
@@ -105,13 +105,13 @@ def get_restriction_texts(pbs_code, schedule_code):
             elif isinstance(restrictions_data, list):
                 all_restrictions_list = restrictions_data
             else:
-                return None
+                return []
             
             # Filter to only the ones we need
             matching_restrictions = [r for r in all_restrictions_list if r.get('res_code') in restriction_codes]
             
-            # Combine all restriction texts
-            combined_text = []
+            # Build list of restriction objects with formatted text
+            restriction_list = []
             for restriction in matching_restrictions:
                 res_code = restriction.get('res_code', '')
                 
@@ -119,27 +119,54 @@ def get_restriction_texts(pbs_code, schedule_code):
                 text = restriction.get('li_html_text') or restriction.get('schedule_html_text', '')
                 
                 if text:
-                    # Remove HTML tags for cleaner display
+                    # Remove HTML tags and format nicely
+                    # First replace common HTML elements with newlines
+                    text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+                    text = text.replace('</p>', '\n\n').replace('<p>', '')
+                    text = text.replace('</li>', '\n').replace('<li>', '• ')
+                    text = text.replace('</div>', '\n').replace('<div>', '')
+                    
+                    # Remove remaining HTML tags
                     clean_text = re.sub('<[^<]+?>', '', text)
-                    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+                    
+                    # Clean up whitespace
+                    clean_text = re.sub(r'\n\s*\n\s*\n+', '\n\n', clean_text)  # Max 2 newlines
+                    clean_text = re.sub(r' +', ' ', clean_text)  # Collapse multiple spaces
+                    
                     # Decode HTML entities
                     clean_text = clean_text.replace('&nbsp;', ' ').replace('&amp;', '&')
+                    clean_text = clean_text.replace('&lt;', '<').replace('&gt;', '>')
+                    
+                    clean_text = clean_text.strip()
                     
                     if clean_text:
                         treatment_phase = restriction.get('treatment_phase', '')
+                        authority_method = restriction.get('authority_method', '')
+                        
+                        # Create a descriptive label for this restriction
+                        label_parts = []
                         if treatment_phase:
-                            combined_text.append(f"Treatment Phase: {treatment_phase}\n{clean_text}")
-                        else:
-                            combined_text.append(clean_text)
+                            label_parts.append(treatment_phase)
+                        if authority_method:
+                            label_parts.append(f"({authority_method})")
+                        
+                        label = " - ".join(label_parts) if label_parts else res_code
+                        
+                        restriction_list.append({
+                            'res_code': res_code,
+                            'label': label,
+                            'text': clean_text,
+                            'treatment_phase': treatment_phase,
+                            'authority_method': authority_method
+                        })
             
-            if combined_text:
-                return "\n\n---\n\n".join(combined_text)
+            return restriction_list
         
-        return None
+        return []
         
     except Exception as e:
         st.warning(f"Could not fetch restriction details: {str(e)}")
-        return None
+        return []
 
 def get_item_by_code(item_code):
     """Fetch PBS item by code - returns (item_data, schedule_code) tuple"""
@@ -289,15 +316,12 @@ def display_item_details(item_data, schedule_code=None):
                  'N/A')
     
     # Get restrictions using the PBS code and schedule
-    restrictions = "No restrictions"
+    restriction_list = []
+    selected_restriction_text = "No restrictions"
     
     if item_code != 'N/A' and schedule_code:
         with st.spinner("Fetching restriction details..."):
-            restriction_text = get_restriction_texts(item_code, schedule_code)
-            if restriction_text:
-                restrictions = restriction_text
-            else:
-                restrictions = "No restriction criteria found"
+            restriction_list = get_restriction_texts(item_code, schedule_code)
     
     # Determine authority type
     benefit_type_code = item_data.get('benefit_type_code', '')
@@ -328,18 +352,36 @@ def display_item_details(item_data, schedule_code=None):
         with st.expander("View all item data"):
             st.json(item_data)
     
-    # Show restrictions
-    if restrictions and restrictions != "No restrictions":
+    # Show restrictions with dropdown if multiple exist
+    if restriction_list and len(restriction_list) > 0:
         st.divider()
         st.subheader("Restrictions")
-        st.text_area("", value=restrictions, height=400, disabled=True, key=f"restrictions_{item_code}")
+        
+        if len(restriction_list) > 1:
+            # Create dropdown for multiple restrictions
+            restriction_options = {r['label']: r for r in restriction_list}
+            
+            selected_label = st.selectbox(
+                "Select restriction criteria:",
+                options=list(restriction_options.keys()),
+                key=f"restriction_select_{item_code}"
+            )
+            
+            selected_restriction = restriction_options[selected_label]
+            selected_restriction_text = selected_restriction['text']
+            
+        else:
+            # Only one restriction
+            selected_restriction_text = restriction_list[0]['text']
+        
+        st.text_area("", value=selected_restriction_text, height=400, disabled=True, key=f"restrictions_{item_code}")
     
     # If authority required, show formatted application
     if benefit_type_code in ['A', 'S']:
         st.divider()
         st.subheader("Authority Application")
         
-        application_text = format_authority_application(item_code, restrictions, provider_number)
+        application_text = format_authority_application(item_code, selected_restriction_text, provider_number)
         
         col1, col2 = st.columns([3, 1])
         with col1:
