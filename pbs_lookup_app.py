@@ -110,10 +110,16 @@ def get_restriction_texts(pbs_code, schedule_code):
                 restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
                 
                 if restrictions_response.status_code == 429:
-                    st.warning(f"Rate limited on page {page}, waiting 5 seconds...")
+                    st.warning(f"Rate limited on page {page}, waiting 10 seconds...")
                     import time
-                    time.sleep(5.0)
+                    time.sleep(10.0)
+                    # Retry once more
                     restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
+                    
+                    if restrictions_response.status_code == 429:
+                        st.warning(f"Still rate limited, waiting 20 seconds...")
+                        time.sleep(20.0)
+                        restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
                 
                 if restrictions_response.status_code == 200:
                     restrictions_data = restrictions_response.json()
@@ -141,10 +147,17 @@ def get_restriction_texts(pbs_code, schedule_code):
         
         st.write(f"DEBUG: Fetched {len(all_restrictions)} total restrictions")
         
+        # Debug: show sample of res_codes we got
+        if all_restrictions:
+            fetched_codes = [r.get('res_code') for r in all_restrictions[:20]]
+            st.write(f"DEBUG: Sample of fetched res_codes: {fetched_codes}")
+        
         # Now filter to the ones we need
         matching_restrictions = [r for r in all_restrictions if r.get('res_code') in restriction_codes]
         
         st.write(f"DEBUG: Found {len(matching_restrictions)} matching restrictions")
+        st.write(f"DEBUG: Matched res_codes: {[r.get('res_code') for r in matching_restrictions]}")
+        st.write(f"DEBUG: Missing res_codes: {[code for code in restriction_codes if code not in [r.get('res_code') for r in matching_restrictions]]}")
         
         # Build list of restriction objects with formatted text
         restriction_list = []
