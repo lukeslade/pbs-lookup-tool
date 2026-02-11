@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
+import re
 
 # Set page config
 st.set_page_config(
@@ -49,12 +50,13 @@ def get_headers():
         "Accept": "application/json"
     }
     if subscription_key:
-        headers["Subscription-Key"] = subscription_key  # Note: Capital S and K
+        headers["Subscription-Key"] = subscription_key
     return headers
 
-def get_restrictions_for_item(pbs_code, schedule_code, li_item_id):
-    """Fetch restriction codes for an item using item-restriction-relationships endpoint"""
+def get_restriction_texts(pbs_code, schedule_code):
+    """Fetch all restriction texts for an item using item-restriction-relationships"""
     try:
+        # First, get the restriction relationships for this item
         url = f"{api_base}/item-restriction-relationships"
         params = {
             'pbs_code': pbs_code,
@@ -62,122 +64,81 @@ def get_restrictions_for_item(pbs_code, schedule_code, li_item_id):
             'limit': 50
         }
         
-        st.write(f"DEBUG: Fetching item-restriction-relationships from: {url}")
-        st.write(f"DEBUG: Params: {params}")
-        
         response = requests.get(url, headers=get_headers(), params=params, timeout=30)
         
-        st.write(f"DEBUG: item-restriction-relationships response status: {response.status_code}")
+        if response.status_code != 200:
+            return None
         
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Check if data is wrapped in a dict with 'data' key
-            if isinstance(data, dict) and 'data' in data:
-                data = data['data']
-            
-            st.write(f"DEBUG: Found {len(data) if isinstance(data, list) else 0} restriction relationships")
-            
-            if isinstance(data, list) and len(data) > 0:
-                # Return all restriction codes for this item
-                restriction_codes = [rel.get('res_code') for rel in data if rel.get('res_code')]
-                st.write(f"DEBUG: Restriction codes: {restriction_codes}")
-                return restriction_codes
-            else:
-                st.write(f"DEBUG: No restriction relationships found")
-                return []
+        data = response.json()
+        
+        # Extract data array
+        if isinstance(data, dict) and 'data' in data:
+            relationships = data['data']
+        elif isinstance(data, list):
+            relationships = data
         else:
-            st.write(f"DEBUG: API error: {response.text[:500]}")
-            return []
-    except Exception as e:
-        st.warning(f"Could not fetch restriction relationships: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
-        return []
-
-def get_restriction_text(restriction_code, schedule_code):
-    """Fetch restriction text from the restrictions endpoint"""
-    try:
-        url = f"{api_base}/restrictions"
-        params = {
-            'res_code': restriction_code,
+            return None
+        
+        if not relationships:
+            return None
+        
+        # Get all unique restriction codes
+        restriction_codes = list(set([r.get('res_code') for r in relationships if r.get('res_code')]))
+        
+        if not restriction_codes:
+            return None
+        
+        # Fetch all restrictions for this schedule in one call
+        restrictions_url = f"{api_base}/restrictions"
+        restrictions_params = {
             'schedule_code': schedule_code,
-            'limit': 10
+            'limit': 1000  # Get many at once to avoid rate limiting
         }
         
-        st.write(f"DEBUG: Fetching restrictions from: {url}")
-        st.write(f"DEBUG: Params: {params}")
+        restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
         
-        response = requests.get(url, headers=get_headers(), params=params, timeout=30)
-        
-        st.write(f"DEBUG: Restrictions response status: {response.status_code}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            st.write(f"DEBUG: Restrictions response type: {type(data)}")
+        if restrictions_response.status_code == 200:
+            restrictions_data = restrictions_response.json()
             
-            # Check if data is wrapped in a dict with 'data' key
-            if isinstance(data, dict) and 'data' in data:
-                data = data['data']
-                st.write(f"DEBUG: Extracted data array, length: {len(data) if isinstance(data, list) else 'not a list'}")
-            
-            if isinstance(data, list) and len(data) > 0:
-                st.write(f"DEBUG: First restriction keys: {list(data[0].keys())}")
-                # Get the restriction text
-                restriction = data[0]
-                
-                # Try to get prescribing text if available
-                prescribing_txt_id = restriction.get('prescribing_txt_id')
-                st.write(f"DEBUG: prescribing_txt_id: {prescribing_txt_id}")
-                
-                if prescribing_txt_id:
-                    prescribing_url = f"{api_base}/prescribing-texts"
-                    prescribing_params = {
-                        'prescribing_txt_id': prescribing_txt_id,
-                        'schedule_code': schedule_code
-                    }
-                    
-                    st.write(f"DEBUG: Fetching prescribing text from: {prescribing_url}")
-                    st.write(f"DEBUG: Params: {prescribing_params}")
-                    
-                    prescribing_response = requests.get(prescribing_url, headers=get_headers(), params=prescribing_params, timeout=30)
-                    
-                    st.write(f"DEBUG: Prescribing text response status: {prescribing_response.status_code}")
-                    
-                    if prescribing_response.status_code == 200:
-                        prescribing_data = prescribing_response.json()
-                        st.write(f"DEBUG: Prescribing response type: {type(prescribing_data)}")
-                        
-                        # Check if wrapped in dict with 'data' key
-                        if isinstance(prescribing_data, dict) and 'data' in prescribing_data:
-                            prescribing_data = prescribing_data['data']
-                        
-                        if isinstance(prescribing_data, list) and len(prescribing_data) > 0:
-                            st.write(f"DEBUG: Found prescribing text, length: {len(prescribing_data[0].get('prescribing_txt', ''))}")
-                            return prescribing_data[0].get('prescribing_txt', 'No restriction text available')
-                
-                # If no prescribing text, return what we can from the restriction
-                restriction_text = restriction.get('restriction_text', '')
-                if restriction_text:
-                    return restriction_text
-                    
-                # Try other possible field names
-                for field in ['text', 'criteria', 'restriction_criteria', 'indication_and_clinical_criteria']:
-                    if field in restriction and restriction[field]:
-                        return restriction[field]
-                
-                st.write(f"DEBUG: Available restriction fields: {list(restriction.keys())}")
-                return 'No restriction text found in API response'
+            if isinstance(restrictions_data, dict) and 'data' in restrictions_data:
+                all_restrictions_list = restrictions_data['data']
+            elif isinstance(restrictions_data, list):
+                all_restrictions_list = restrictions_data
             else:
-                st.write(f"DEBUG: No restrictions found or empty list")
                 return None
-        else:
-            st.write(f"DEBUG: Restrictions API error: {response.text[:500]}")
-            return None
+            
+            # Filter to only the ones we need
+            matching_restrictions = [r for r in all_restrictions_list if r.get('res_code') in restriction_codes]
+            
+            # Combine all restriction texts
+            combined_text = []
+            for restriction in matching_restrictions:
+                res_code = restriction.get('res_code', '')
+                
+                # Get the text - li_html_text is the main field
+                text = restriction.get('li_html_text') or restriction.get('schedule_html_text', '')
+                
+                if text:
+                    # Remove HTML tags for cleaner display
+                    clean_text = re.sub('<[^<]+?>', '', text)
+                    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+                    # Decode HTML entities
+                    clean_text = clean_text.replace('&nbsp;', ' ').replace('&amp;', '&')
+                    
+                    if clean_text:
+                        treatment_phase = restriction.get('treatment_phase', '')
+                        if treatment_phase:
+                            combined_text.append(f"Treatment Phase: {treatment_phase}\n{clean_text}")
+                        else:
+                            combined_text.append(clean_text)
+            
+            if combined_text:
+                return "\n\n---\n\n".join(combined_text)
+        
+        return None
+        
     except Exception as e:
         st.warning(f"Could not fetch restriction details: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
         return None
 
 def get_item_by_code(item_code):
@@ -189,27 +150,22 @@ def get_item_by_code(item_code):
         
         if schedule_response.status_code != 200:
             st.error(f"Failed to get schedule info. Status: {schedule_response.status_code}")
-            st.error(f"Response: {schedule_response.text[:500]}")
             return None, None
         
-        try:
-            schedules_resp = schedule_response.json()
-        except Exception as e:
-            st.error(f"Could not parse schedule response as JSON: {str(e)}")
-            return None, None
+        schedules_resp = schedule_response.json()
         
-        # Extract the data array from the response
+        # Extract the data array
         if isinstance(schedules_resp, dict) and 'data' in schedules_resp:
             schedules = schedules_resp['data']
         else:
-            st.error(f"Unexpected schedule response structure")
+            st.error("Unexpected schedule response structure")
             return None, None
             
-        if not schedules or len(schedules) == 0:
+        if not schedules:
             st.error("No schedules available")
             return None, None
         
-        # Get the latest schedule code (highest schedule_code number)
+        # Get the latest schedule code
         latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', 0), reverse=True)[0]
         schedule_code = latest_schedule.get('schedule_code')
         
@@ -226,11 +182,7 @@ def get_item_by_code(item_code):
         response = requests.get(url, headers=get_headers(), params=params, timeout=30)
         
         if response.status_code == 200:
-            try:
-                items_resp = response.json()
-            except:
-                st.error(f"Could not parse items response as JSON: {response.text[:500]}")
-                return None, None
+            items_resp = response.json()
             
             # Extract items from data array
             if isinstance(items_resp, dict) and 'data' in items_resp:
@@ -246,19 +198,13 @@ def get_item_by_code(item_code):
                     st.warning(f"No items found with code {item_code}")
                     return None, None
             else:
-                st.error(f"Unexpected items response structure")
+                st.error("Unexpected items response structure")
                 return None, None
         else:
             st.error(f"API Error (Status {response.status_code})")
-            st.error(f"Response: {response.text[:500]}")
             return None, None
-    except requests.exceptions.Timeout:
-        st.error("Request timed out. The PBS API may be slow or unavailable.")
-        return None, None
     except Exception as e:
         st.error(f"Error fetching data: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
         return None, None
 
 def search_items(drug_name=None):
@@ -269,27 +215,19 @@ def search_items(drug_name=None):
         schedule_response = requests.get(schedule_url, headers=get_headers(), timeout=30)
         
         if schedule_response.status_code != 200:
-            st.error(f"Failed to get schedule info. Status: {schedule_response.status_code}")
+            st.error("Failed to get schedule info")
             return None
         
-        try:
-            schedules_resp = schedule_response.json()
-        except:
-            st.error(f"Could not parse schedule response as JSON")
-            return None
+        schedules_resp = schedule_response.json()
         
-        # Extract the data array from the response
         if isinstance(schedules_resp, dict) and 'data' in schedules_resp:
             schedules = schedules_resp['data']
         else:
-            st.error(f"Unexpected schedule response structure")
             return None
             
-        if not schedules or len(schedules) == 0:
-            st.error("No schedules available")
+        if not schedules:
             return None
         
-        # Get the latest schedule code
         latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', 0), reverse=True)[0]
         schedule_code = latest_schedule.get('schedule_code')
         
@@ -301,48 +239,31 @@ def search_items(drug_name=None):
             'limit': 200
         }
         
-        # Try searching with drug name filter
         if drug_name:
             params['filter'] = f"li_drug_name:like:{drug_name}"
         
         response = requests.get(url, headers=get_headers(), params=params, timeout=30)
         
         if response.status_code == 200:
-            try:
-                items_resp = response.json()
-            except:
-                st.error(f"Could not parse response as JSON")
-                return None
+            items_resp = response.json()
             
-            # Extract items from data array
             if isinstance(items_resp, dict) and 'data' in items_resp:
                 items = items_resp['data']
                 
-                # Filter by drug name in results if the API filter didn't work
+                # Filter by drug name if API filter didn't work
                 if drug_name:
                     filtered = []
                     for item in items:
                         item_drug = (item.get('li_drug_name', '') or 
-                                   item.get('drug_name', '') or 
-                                   item.get('name', '') or '').lower()
+                                   item.get('drug_name', '') or '').lower()
                         if drug_name.lower() in item_drug:
                             filtered.append(item)
                     return {'items': filtered if filtered else items, 'schedule_code': schedule_code}
                 return {'items': items, 'schedule_code': schedule_code}
-            else:
-                st.error(f"Unexpected items response structure")
-                return None
-        else:
-            st.error(f"API Error (Status {response.status_code})")
-            st.error(f"Response: {response.text[:500]}")
-            return None
-    except requests.exceptions.Timeout:
-        st.error("Request timed out. The PBS API may be slow or unavailable.")
+        
         return None
     except Exception as e:
         st.error(f"Error searching: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
         return None
 
 def format_authority_application(item_code, restrictions, provider_num):
@@ -358,43 +279,27 @@ def display_item_details(item_data, schedule_code=None):
         st.warning("No item data available")
         return
     
-    # Extract relevant information - PBS API v3 field names
-    pbs_code = (item_data.get('pbs_code') or 
-                item_data.get('code') or 
-                item_data.get('item_code') or
-                'N/A')
-    
-    # Get drug name - check multiple possible fields
-    drug_name = (item_data.get('li_drug_name') or
-                 item_data.get('drug_name') or 
-                 item_data.get('name') or 
-                 item_data.get('li_item_id') or
+    # Extract relevant information
+    item_code = (item_data.get('pbs_code') or 
+                 item_data.get('code') or 
                  'N/A')
     
-    li_item_id = item_data.get('li_item_id')
+    drug_name = (item_data.get('li_drug_name') or
+                 item_data.get('drug_name') or 
+                 'N/A')
     
-    # Fetch restriction codes using the relationship endpoint
+    # Get restrictions using the PBS code and schedule
     restrictions = "No restrictions"
-    restriction_codes = []
     
-    if schedule_code and pbs_code != 'N/A':
+    if item_code != 'N/A' and schedule_code:
         with st.spinner("Fetching restriction details..."):
-            restriction_codes = get_restrictions_for_item(pbs_code, schedule_code, li_item_id)
-            
-            if restriction_codes:
-                # Fetch the text for each restriction
-                all_restriction_texts = []
-                for res_code in restriction_codes:
-                    restriction_text = get_restriction_text(res_code, schedule_code)
-                    if restriction_text:
-                        all_restriction_texts.append(f"Restriction {res_code}:\n{restriction_text}")
-                
-                if all_restriction_texts:
-                    restrictions = "\n\n".join(all_restriction_texts)
-                else:
-                    restrictions = f"Restriction codes: {', '.join(restriction_codes)}\nSee PBS website for full details"
+            restriction_text = get_restriction_texts(item_code, schedule_code)
+            if restriction_text:
+                restrictions = restriction_text
+            else:
+                restrictions = "No restriction criteria found"
     
-    # Determine authority type based on PBS API fields
+    # Determine authority type
     benefit_type_code = item_data.get('benefit_type_code', '')
     
     if benefit_type_code == 'A':
@@ -411,18 +316,15 @@ def display_item_details(item_data, schedule_code=None):
     
     with col1:
         st.subheader("Item Details")
-        st.write(f"**Item Code:** {pbs_code}")
+        st.write(f"**Item Code:** {item_code}")
         st.write(f"**Drug Name:** {drug_name}")
         st.write(f"**Authority Type:** {authority_type}")
-        if restriction_codes:
-            st.write(f"**Restriction Codes:** {', '.join(restriction_codes)}")
     
     with col2:
         st.subheader("Additional Details")
         st.write(f"**Program:** {item_data.get('program_code', 'N/A')}")
         st.write(f"**Benefit Type:** {benefit_type_code or 'N/A'}")
         
-        # Show raw data for debugging
         with st.expander("View all item data"):
             st.json(item_data)
     
@@ -430,27 +332,27 @@ def display_item_details(item_data, schedule_code=None):
     if restrictions and restrictions != "No restrictions":
         st.divider()
         st.subheader("Restrictions")
-        st.text_area("", value=restrictions, height=300, disabled=True, key=f"restrictions_{pbs_code}")
+        st.text_area("", value=restrictions, height=400, disabled=True, key=f"restrictions_{item_code}")
     
     # If authority required, show formatted application
     if benefit_type_code in ['A', 'S']:
         st.divider()
         st.subheader("Authority Application")
         
-        application_text = format_authority_application(pbs_code, restrictions, provider_number)
+        application_text = format_authority_application(item_code, restrictions, provider_number)
         
         col1, col2 = st.columns([3, 1])
         with col1:
             st.text_area(
                 "Copy the text below for your authority application:",
                 value=application_text,
-                height=250,
-                key=f"app_{pbs_code}"
+                height=300,
+                key=f"app_{item_code}"
             )
         with col2:
             st.write("")
             st.write("")
-            if st.button("📋 Copy to Clipboard", key=f"copy_{pbs_code}"):
+            if st.button("📋 Copy to Clipboard", key=f"copy_{item_code}"):
                 st.code(application_text, language=None)
                 st.success("Text ready to copy above!")
 
@@ -458,7 +360,7 @@ def display_item_details(item_data, schedule_code=None):
 with tab1:
     item_code_input = st.text_input(
         "Enter PBS Item Code",
-        placeholder="e.g., 12345A",
+        placeholder="e.g., 12119W",
         help="Enter the PBS item code"
     )
     
@@ -466,7 +368,7 @@ with tab1:
         if item_code_input:
             with st.spinner("Fetching item details..."):
                 result = get_item_by_code(item_code_input)
-                if result and result[0]:  # Check if we got a valid tuple
+                if result and result[0]:
                     item_data, schedule_code = result
                     display_item_details(item_data, schedule_code)
                 else:
@@ -502,12 +404,11 @@ with tab2:
                     if len(items) > 0:
                         st.success(f"Found {len(items)} item(s)")
                         
-                        # Show selection dropdown
                         if len(items) > 1:
                             item_options = {}
                             for item in items:
-                                pbs_code = (item.get('pbs_code') or item.get('code') or 'N/A')
-                                drug = (item.get('li_drug_name') or item.get('drug_name') or item.get('name') or 'Unknown')
+                                pbs_code = (item.get('pbs_code') or 'N/A')
+                                drug = (item.get('li_drug_name') or item.get('drug_name') or 'Unknown')
                                 program = item.get('program_code', '')
                                 key = f"{pbs_code} - {drug} [{program}]"
                                 item_options[key] = item
@@ -522,7 +423,6 @@ with tab2:
                                 st.divider()
                                 display_item_details(selected_item, schedule_code)
                         else:
-                            # Only one result, display it
                             display_item_details(items[0], schedule_code)
                     else:
                         st.warning(f"No items found for '{drug_name_input}'")
@@ -531,28 +431,22 @@ with tab2:
         else:
             st.warning("Please enter a drug name")
 
-# Footer and API Information
+# Footer
 st.divider()
 st.caption("Data sourced from PBS Public Data API | For healthcare professional use")
 
-# Add API connection status indicator in sidebar
 with st.sidebar:
     st.divider()
     st.subheader("ℹ️ API Information")
     st.info("""
-    **Note:** The PBS Public API may require:
-    - A subscription key (get from PBS Developer Portal)
-    - Access through the Postman collection
+    **Note:** The PBS Public API requires a subscription key.
     
-    If searches return no results, try:
-    1. Adding a subscription key in settings above
-    2. Checking the PBS website directly
-    3. Using exact PBS item codes
+    Get your key at:
+    [PBS Developer Portal](https://data-api-portal.health.gov.au/)
     """)
     
     st.markdown("""
     **Useful Links:**
     - [PBS Website](https://www.pbs.gov.au/)
-    - [PBS Developer Portal](https://data-api-portal.health.gov.au/)
     - [PBS Data Documentation](https://data.pbs.gov.au/)
     """)
