@@ -90,110 +90,112 @@ def get_restriction_texts(pbs_code, schedule_code):
         
         st.write(f"DEBUG: Looking for {len(restriction_codes)} restriction codes: {restriction_codes}")
         
-        # Fetch each restriction individually to avoid pagination issues
-        restriction_list = []
+        # Try to fetch ALL restrictions for this schedule with pagination
+        # Then filter locally to avoid rate limiting
+        all_restrictions = []
+        page = 1
+        has_more = True
         
-        for res_code in restriction_codes:
+        while has_more and page <= 10:  # Max 10 pages to avoid too many calls
             restrictions_url = f"{api_base}/restrictions"
             restrictions_params = {
-                'res_code': res_code,
                 'schedule_code': schedule_code,
-                'limit': 10
+                'limit': 1000,
+                'page': page
             }
             
-            st.write(f"DEBUG: Fetching restriction {res_code}...")
+            st.write(f"DEBUG: Fetching page {page} of restrictions...")
             
             try:
                 restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
                 
-                st.write(f"DEBUG: Response status for {res_code}: {restrictions_response.status_code}")
-                
-                # Handle rate limiting with retry
                 if restrictions_response.status_code == 429:
-                    st.warning(f"Rate limited on {res_code}, waiting 3 seconds and retrying...")
+                    st.warning(f"Rate limited on page {page}, waiting 5 seconds...")
                     import time
-                    time.sleep(3.0)
+                    time.sleep(5.0)
                     restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
-                    st.write(f"DEBUG: Retry response status for {res_code}: {restrictions_response.status_code}")
                 
                 if restrictions_response.status_code == 200:
                     restrictions_data = restrictions_response.json()
                     
                     if isinstance(restrictions_data, dict) and 'data' in restrictions_data:
-                        restrictions = restrictions_data['data']
-                    elif isinstance(restrictions_data, list):
-                        restrictions = restrictions_data
+                        page_restrictions = restrictions_data['data']
+                        all_restrictions.extend(page_restrictions)
+                        
+                        # Check if there are more pages
+                        if len(page_restrictions) < 1000:
+                            has_more = False
+                        else:
+                            page += 1
+                            import time
+                            time.sleep(2.0)  # Wait between pages
                     else:
-                        st.write(f"DEBUG: Unexpected response type for {res_code}")
-                        continue
+                        has_more = False
+                else:
+                    st.write(f"DEBUG: Error fetching page {page}: {restrictions_response.status_code}")
+                    has_more = False
                     
-                    st.write(f"DEBUG: Found {len(restrictions)} restriction(s) for {res_code}")
-                    
-                    if not restrictions or len(restrictions) == 0:
-                        st.write(f"DEBUG: No restriction data found for {res_code}")
-                        continue
-                    
-                    restriction = restrictions[0]
-                    st.write(f"DEBUG: Restriction {res_code} fields: {list(restriction.keys())}")
-                    
-                    # Get the text - li_html_text is the main field
-                    text = restriction.get('li_html_text') or restriction.get('schedule_html_text', '')
-                    
-                    st.write(f"DEBUG: Text length for {res_code}: {len(text) if text else 0}")
-                    
-                    if text:
-                        # Remove HTML tags and format nicely
-                        # First replace common HTML elements with newlines
-                        text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
-                        text = text.replace('</p>', '\n\n').replace('<p>', '')
-                        text = text.replace('</li>', '\n').replace('<li>', '• ')
-                        text = text.replace('</div>', '\n').replace('<div>', '')
-                        
-                        # Remove remaining HTML tags
-                        clean_text = re.sub('<[^<]+?>', '', text)
-                        
-                        # Clean up whitespace
-                        clean_text = re.sub(r'\n\s*\n\s*\n+', '\n\n', clean_text)  # Max 2 newlines
-                        clean_text = re.sub(r' +', ' ', clean_text)  # Collapse multiple spaces
-                        
-                        # Decode HTML entities
-                        clean_text = clean_text.replace('&nbsp;', ' ').replace('&amp;', '&')
-                        clean_text = clean_text.replace('&lt;', '<').replace('&gt;', '>')
-                        
-                        clean_text = clean_text.strip()
-                        
-                        if clean_text:
-                            treatment_phase = restriction.get('treatment_phase', '')
-                            authority_method = restriction.get('authority_method', '')
-                            
-                            # Create a descriptive label for this restriction
-                            label_parts = []
-                            if treatment_phase:
-                                label_parts.append(treatment_phase)
-                            if authority_method:
-                                label_parts.append(f"({authority_method})")
-                            
-                            label = " - ".join(label_parts) if label_parts else res_code
-                            
-                            st.write(f"DEBUG: Found restriction: {label}")
-                            
-                            restriction_list.append({
-                                'res_code': res_code,
-                                'label': label,
-                                'text': clean_text,
-                                'treatment_phase': treatment_phase,
-                                'authority_method': authority_method
-                            })
-                    else:
-                        st.write(f"DEBUG: No text found for {res_code}")
-                        
-                # Small delay to avoid rate limiting - increased to 1 second
-                import time
-                time.sleep(1.0)
-                
             except Exception as e:
-                st.write(f"DEBUG: Error fetching {res_code}: {str(e)}")
-                continue
+                st.write(f"DEBUG: Exception on page {page}: {str(e)}")
+                has_more = False
+        
+        st.write(f"DEBUG: Fetched {len(all_restrictions)} total restrictions")
+        
+        # Now filter to the ones we need
+        matching_restrictions = [r for r in all_restrictions if r.get('res_code') in restriction_codes]
+        
+        st.write(f"DEBUG: Found {len(matching_restrictions)} matching restrictions")
+        
+        # Build list of restriction objects with formatted text
+        restriction_list = []
+        for restriction in matching_restrictions:
+            res_code = restriction.get('res_code', '')
+            
+            # Get the text - li_html_text is the main field
+            text = restriction.get('li_html_text') or restriction.get('schedule_html_text', '')
+            
+            if text:
+                # Remove HTML tags and format nicely
+                text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+                text = text.replace('</p>', '\n\n').replace('<p>', '')
+                text = text.replace('</li>', '\n').replace('<li>', '• ')
+                text = text.replace('</div>', '\n').replace('<div>', '')
+                
+                # Remove remaining HTML tags
+                clean_text = re.sub('<[^<]+?>', '', text)
+                
+                # Clean up whitespace
+                clean_text = re.sub(r'\n\s*\n\s*\n+', '\n\n', clean_text)
+                clean_text = re.sub(r' +', ' ', clean_text)
+                
+                # Decode HTML entities
+                clean_text = clean_text.replace('&nbsp;', ' ').replace('&amp;', '&')
+                clean_text = clean_text.replace('&lt;', '<').replace('&gt;', '>')
+                
+                clean_text = clean_text.strip()
+                
+                if clean_text:
+                    treatment_phase = restriction.get('treatment_phase', '')
+                    authority_method = restriction.get('authority_method', '')
+                    
+                    # Create a descriptive label
+                    label_parts = []
+                    if treatment_phase:
+                        label_parts.append(treatment_phase)
+                    if authority_method:
+                        label_parts.append(f"({authority_method})")
+                    
+                    label = " - ".join(label_parts) if label_parts else res_code
+                    
+                    st.write(f"DEBUG: Found restriction: {res_code} - {label}")
+                    
+                    restriction_list.append({
+                        'res_code': res_code,
+                        'label': label,
+                        'text': clean_text,
+                        'treatment_phase': treatment_phase,
+                        'authority_method': authority_method
+                    })
         
         return restriction_list
         
