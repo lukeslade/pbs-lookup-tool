@@ -31,7 +31,7 @@ api_base = st.sidebar.text_input(
 
 subscription_key = st.sidebar.text_input(
     "Subscription Key (Optional)",
-    value="",
+    value="2384af7c667342ceb5a736fe29f1dc6b",
     type="password",
     help="Optional subscription key for PBS API. Leave blank to try public access."
 )
@@ -62,35 +62,79 @@ def get_restriction_text(restriction_code, schedule_code):
             'limit': 10
         }
         
+        st.write(f"DEBUG: Fetching restrictions from: {url}")
+        st.write(f"DEBUG: Params: {params}")
+        
         response = requests.get(url, headers=get_headers(), params=params, timeout=30)
+        
+        st.write(f"DEBUG: Restrictions response status: {response.status_code}")
         
         if response.status_code == 200:
             data = response.json()
+            st.write(f"DEBUG: Restrictions response type: {type(data)}")
+            
+            # Check if data is wrapped in a dict with 'data' key
+            if isinstance(data, dict) and 'data' in data:
+                data = data['data']
+                st.write(f"DEBUG: Extracted data array, length: {len(data) if isinstance(data, list) else 'not a list'}")
+            
             if isinstance(data, list) and len(data) > 0:
+                st.write(f"DEBUG: First restriction: {str(data[0])[:500]}")
                 # Get the restriction text
                 restriction = data[0]
                 
                 # Try to get prescribing text if available
                 prescribing_txt_id = restriction.get('prescribing_txt_id')
+                st.write(f"DEBUG: prescribing_txt_id: {prescribing_txt_id}")
+                
                 if prescribing_txt_id:
                     prescribing_url = f"{api_base}/prescribing-texts"
                     prescribing_params = {
                         'prescribing_txt_id': prescribing_txt_id,
                         'schedule_code': schedule_code
                     }
+                    
+                    st.write(f"DEBUG: Fetching prescribing text from: {prescribing_url}")
+                    st.write(f"DEBUG: Params: {prescribing_params}")
+                    
                     prescribing_response = requests.get(prescribing_url, headers=get_headers(), params=prescribing_params, timeout=30)
+                    
+                    st.write(f"DEBUG: Prescribing text response status: {prescribing_response.status_code}")
                     
                     if prescribing_response.status_code == 200:
                         prescribing_data = prescribing_response.json()
+                        st.write(f"DEBUG: Prescribing response type: {type(prescribing_data)}")
+                        
+                        # Check if wrapped in dict with 'data' key
+                        if isinstance(prescribing_data, dict) and 'data' in prescribing_data:
+                            prescribing_data = prescribing_data['data']
+                        
                         if isinstance(prescribing_data, list) and len(prescribing_data) > 0:
+                            st.write(f"DEBUG: First prescribing text: {str(prescribing_data[0])[:500]}")
                             return prescribing_data[0].get('prescribing_txt', 'No restriction text available')
                 
                 # If no prescribing text, return what we can from the restriction
-                return restriction.get('restriction_text', 'No restriction text available')
+                restriction_text = restriction.get('restriction_text', '')
+                if restriction_text:
+                    return restriction_text
+                    
+                # Try other possible field names
+                for field in ['text', 'criteria', 'restriction_criteria', 'indication_and_clinical_criteria']:
+                    if field in restriction and restriction[field]:
+                        return restriction[field]
+                
+                st.write(f"DEBUG: Available restriction fields: {list(restriction.keys())}")
+                return 'No restriction text found in API response'
+            else:
+                st.write(f"DEBUG: No restrictions found or empty list")
+                return None
+        else:
+            st.write(f"DEBUG: Restrictions API error: {response.text[:500]}")
             return None
-        return None
     except Exception as e:
         st.warning(f"Could not fetch restriction details: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
 
 def get_item_by_code(item_code):
@@ -286,6 +330,13 @@ def display_item_details(item_data, schedule_code=None):
     
     # Get restriction code and fetch actual text
     restriction_code = item_data.get('restriction_code')
+    st.write(f"DEBUG: Item restriction_code field: {restriction_code}")
+    st.write(f"DEBUG: Item res_code field: {item_data.get('res_code')}")
+    
+    # Try alternate field names
+    if not restriction_code:
+        restriction_code = item_data.get('res_code')
+    
     restrictions = "No restrictions"
     
     if restriction_code and schedule_code:
