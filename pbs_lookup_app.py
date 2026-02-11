@@ -49,7 +49,7 @@ def get_headers():
         "Accept": "application/json"
     }
     if subscription_key:
-        headers["subscription-key"] = subscription_key
+        headers["Subscription-Key"] = subscription_key  # Note: Capital S and K
     return headers
 
 def get_item_by_code(item_code):
