@@ -40,6 +40,12 @@ subscription_key = st.sidebar.text_input(
 # Main search interface
 st.header("Search PBS Items")
 
+# Initialize session state to store search results
+if 'current_item' not in st.session_state:
+    st.session_state.current_item = None
+if 'current_schedule' not in st.session_state:
+    st.session_state.current_schedule = None
+
 # Create tabs for different search methods
 tab1, tab2 = st.tabs(["Search by Item Code", "Search by Drug Name"])
 
@@ -349,16 +355,23 @@ def display_item_details(item_data, schedule_code=None):
                  item_data.get('drug_name') or 
                  'N/A')
     
-    # Get restrictions using the PBS code and schedule
-    restriction_list = []
-    selected_restriction_text = "No restrictions"
+    # Use session state to cache restriction list
+    cache_key = f"restrictions_{item_code}_{schedule_code}"
     
-    if item_code != 'N/A' and schedule_code:
-        with st.spinner("Fetching restriction details..."):
-            restriction_list = get_restriction_texts(item_code, schedule_code)
-            st.write(f"DEBUG: Found {len(restriction_list)} restrictions")
-            for r in restriction_list:
-                st.write(f"DEBUG: Restriction - {r['label']}")
+    if cache_key not in st.session_state:
+        # Get restrictions using the PBS code and schedule
+        if item_code != 'N/A' and schedule_code:
+            with st.spinner("Fetching restriction details..."):
+                restriction_list = get_restriction_texts(item_code, schedule_code)
+                st.session_state[cache_key] = restriction_list
+                st.write(f"DEBUG: Found {len(restriction_list)} restrictions")
+                for r in restriction_list:
+                    st.write(f"DEBUG: Restriction - {r['label']}")
+        else:
+            st.session_state[cache_key] = []
+    
+    restriction_list = st.session_state[cache_key]
+    selected_restriction_text = "No restrictions"
     
     # Determine authority type
     benefit_type_code = item_data.get('benefit_type_code', '')
@@ -448,12 +461,18 @@ with tab1:
             with st.spinner("Fetching item details..."):
                 result = get_item_by_code(item_code_input)
                 if result and result[0]:
-                    item_data, schedule_code = result
-                    display_item_details(item_data, schedule_code)
+                    st.session_state.current_item = result[0]
+                    st.session_state.current_schedule = result[1]
                 else:
                     st.error(f"Item code '{item_code_input}' not found. Please check the code and try again.")
+                    st.session_state.current_item = None
+                    st.session_state.current_schedule = None
         else:
             st.warning("Please enter an item code")
+    
+    # Display results if they exist in session state
+    if st.session_state.current_item is not None:
+        display_item_details(st.session_state.current_item, st.session_state.current_schedule)
 
 # Tab 2: Search by Drug Name
 with tab2:
@@ -498,17 +517,26 @@ with tab2:
                             )
                             
                             if selected_item_key:
-                                selected_item = item_options[selected_item_key]
-                                st.divider()
-                                display_item_details(selected_item, schedule_code)
+                                st.session_state.current_item = item_options[selected_item_key]
+                                st.session_state.current_schedule = schedule_code
                         else:
-                            display_item_details(items[0], schedule_code)
+                            st.session_state.current_item = items[0]
+                            st.session_state.current_schedule = schedule_code
                     else:
                         st.warning(f"No items found for '{drug_name_input}'")
+                        st.session_state.current_item = None
+                        st.session_state.current_schedule = None
                 else:
                     st.error("No results found. Please try a different search term.")
+                    st.session_state.current_item = None
+                    st.session_state.current_schedule = None
         else:
             st.warning("Please enter a drug name")
+    
+    # Display results if they exist in session state
+    if st.session_state.current_item is not None:
+        st.divider()
+        display_item_details(st.session_state.current_item, st.session_state.current_schedule)
 
 # Footer
 st.divider()
