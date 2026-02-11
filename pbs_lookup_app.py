@@ -108,6 +108,14 @@ def get_restriction_texts(pbs_code, schedule_code):
                 
                 st.write(f"DEBUG: Response status for {res_code}: {restrictions_response.status_code}")
                 
+                # Handle rate limiting with retry
+                if restrictions_response.status_code == 429:
+                    st.warning(f"Rate limited on {res_code}, waiting 3 seconds and retrying...")
+                    import time
+                    time.sleep(3.0)
+                    restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
+                    st.write(f"DEBUG: Retry response status for {res_code}: {restrictions_response.status_code}")
+                
                 if restrictions_response.status_code == 200:
                     restrictions_data = restrictions_response.json()
                     
@@ -179,9 +187,9 @@ def get_restriction_texts(pbs_code, schedule_code):
                     else:
                         st.write(f"DEBUG: No text found for {res_code}")
                         
-                # Small delay to avoid rate limiting
+                # Small delay to avoid rate limiting - increased to 1 second
                 import time
-                time.sleep(0.1)
+                time.sleep(1.0)
                 
             except Exception as e:
                 st.write(f"DEBUG: Error fetching {res_code}: {str(e)}")
