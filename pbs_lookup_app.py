@@ -57,64 +57,37 @@ def get_item_by_code(item_code):
     try:
         # First get the latest schedule
         schedule_url = f"{api_base}/schedules"
-        st.write(f"DEBUG: Fetching schedules from: {schedule_url}")
-        st.write(f"DEBUG: Headers: {get_headers()}")
-        
         schedule_response = requests.get(schedule_url, headers=get_headers(), timeout=30)
-        
-        st.write(f"DEBUG: Schedule response status: {schedule_response.status_code}")
-        st.write(f"DEBUG: Schedule response headers: {dict(schedule_response.headers)}")
-        st.write(f"DEBUG: Schedule response content type: {schedule_response.headers.get('content-type')}")
         
         if schedule_response.status_code != 200:
             st.error(f"Failed to get schedule info. Status: {schedule_response.status_code}")
             st.error(f"Response: {schedule_response.text[:500]}")
             return None
         
-        # Show raw response
-        st.write(f"DEBUG: Raw response (first 1000 chars): {schedule_response.text[:1000]}")
-        
         try:
-            schedules = schedule_response.json()
-            st.write(f"DEBUG: Parsed JSON type: {type(schedules)}")
-            st.write(f"DEBUG: Schedules content: {schedules if isinstance(schedules, str) else str(schedules)[:500]}")
+            schedules_resp = schedule_response.json()
         except Exception as e:
             st.error(f"Could not parse schedule response as JSON: {str(e)}")
-            st.error(f"Response text: {schedule_response.text[:1000]}")
+            return None
+        
+        # Extract the data array from the response
+        if isinstance(schedules_resp, dict) and 'data' in schedules_resp:
+            schedules = schedules_resp['data']
+        else:
+            st.error(f"Unexpected schedule response structure")
             return None
             
-        if not schedules:
+        if not schedules or len(schedules) == 0:
             st.error("No schedules available")
             return None
         
-        # Check if schedules is a string or list
-        if isinstance(schedules, str):
-            st.error(f"API returned a string instead of JSON: {schedules[:500]}")
-            return None
+        # Get the latest schedule code (highest schedule_code number)
+        latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', 0), reverse=True)[0]
+        schedule_code = latest_schedule.get('schedule_code')
         
-        if isinstance(schedules, list):
-            if len(schedules) == 0:
-                st.error("Schedules list is empty")
-                return None
-            
-            # Get the latest schedule code
-            latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', ''), reverse=True)[0]
-            schedule_code = latest_schedule.get('schedule_code')
-        elif isinstance(schedules, dict):
-            # Maybe the response is wrapped in a dict
-            st.write(f"DEBUG: Schedules is a dict with keys: {schedules.keys()}")
-            if 'schedule_code' in schedules:
-                schedule_code = schedules['schedule_code']
-            else:
-                st.error(f"Unexpected schedule response structure: {schedules}")
-                return None
-        else:
-            st.error(f"Unexpected schedules type: {type(schedules)}")
-            return None
+        st.info(f"Using schedule: {schedule_code} (Effective: {latest_schedule.get('effective_date')})")
         
-        st.info(f"Using schedule: {schedule_code}")
-        
-        # Now search for the item - try with uppercase code
+        # Now search for the item
         url = f"{api_base}/items"
         params = {
             'pbs_code': item_code.upper(),
@@ -122,38 +95,30 @@ def get_item_by_code(item_code):
             'limit': 100
         }
         
-        st.write(f"DEBUG: Fetching items from: {url}")
-        st.write(f"DEBUG: With params: {params}")
-        
         response = requests.get(url, headers=get_headers(), params=params, timeout=30)
-        
-        # Debug: show what we got
-        st.write(f"Items response status: {response.status_code}")
-        st.write(f"Items response content type: {response.headers.get('content-type')}")
         
         if response.status_code == 200:
             try:
-                data = response.json()
+                items_resp = response.json()
             except:
                 st.error(f"Could not parse items response as JSON: {response.text[:500]}")
                 return None
-                
-            st.write(f"Response type: {type(data)}")
             
-            if isinstance(data, list):
-                st.write(f"Number of results: {len(data)}")
-                if len(data) > 0:
-                    st.write(f"First result sample: {str(data[0])[:500]}")
+            # Extract items from data array
+            if isinstance(items_resp, dict) and 'data' in items_resp:
+                items = items_resp['data']
+                
+                if len(items) > 0:
                     # Filter to exact match on PBS code
-                    exact_matches = [item for item in data if item.get('pbs_code', '').upper() == item_code.upper()]
+                    exact_matches = [item for item in items if item.get('pbs_code', '').upper() == item_code.upper()]
                     if exact_matches:
                         return exact_matches[0]
-                    return data[0]
-            elif isinstance(data, dict):
-                st.write(f"Response is dict with keys: {data.keys()}")
-                return data
+                    return items[0]
+                else:
+                    st.warning(f"No items found with code {item_code}")
+                    return None
             else:
-                st.warning(f"No items found with code {item_code}")
+                st.error(f"Unexpected items response structure")
                 return None
         else:
             st.error(f"API Error (Status {response.status_code})")
@@ -180,25 +145,32 @@ def search_items(drug_name=None):
             return None
         
         try:
-            schedules = schedule_response.json()
+            schedules_resp = schedule_response.json()
         except:
             st.error(f"Could not parse schedule response as JSON")
+            return None
+        
+        # Extract the data array from the response
+        if isinstance(schedules_resp, dict) and 'data' in schedules_resp:
+            schedules = schedules_resp['data']
+        else:
+            st.error(f"Unexpected schedule response structure")
             return None
             
         if not schedules or len(schedules) == 0:
             st.error("No schedules available")
             return None
-            
+        
         # Get the latest schedule code
-        latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', ''), reverse=True)[0]
+        latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', 0), reverse=True)[0]
         schedule_code = latest_schedule.get('schedule_code')
         
-        st.info(f"Using schedule: {schedule_code}")
+        st.info(f"Using schedule: {schedule_code} (Effective: {latest_schedule.get('effective_date')})")
         
         url = f"{api_base}/items"
         params = {
             'schedule_code': schedule_code,
-            'limit': 100
+            'limit': 200
         }
         
         # Try searching with drug name filter
@@ -207,28 +179,31 @@ def search_items(drug_name=None):
         
         response = requests.get(url, headers=get_headers(), params=params, timeout=30)
         
-        st.write(f"Response status: {response.status_code}")
-        
         if response.status_code == 200:
             try:
-                data = response.json()
+                items_resp = response.json()
             except:
                 st.error(f"Could not parse response as JSON")
                 return None
+            
+            # Extract items from data array
+            if isinstance(items_resp, dict) and 'data' in items_resp:
+                items = items_resp['data']
                 
-            if isinstance(data, list):
                 # Filter by drug name in results if the API filter didn't work
                 if drug_name:
                     filtered = []
-                    for item in data:
+                    for item in items:
                         item_drug = (item.get('li_drug_name', '') or 
                                    item.get('drug_name', '') or 
                                    item.get('name', '') or '').lower()
                         if drug_name.lower() in item_drug:
                             filtered.append(item)
-                    return {'items': filtered if filtered else data[:20]}
-                return {'items': data[:20]}
-            return None
+                    return {'items': filtered if filtered else items}
+                return {'items': items}
+            else:
+                st.error(f"Unexpected items response structure")
+                return None
         else:
             st.error(f"API Error (Status {response.status_code})")
             st.error(f"Response: {response.text[:500]}")
