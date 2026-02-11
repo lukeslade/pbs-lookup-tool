@@ -61,10 +61,15 @@ def get_item_by_code(item_code):
         
         if schedule_response.status_code != 200:
             st.error(f"Failed to get schedule info. Status: {schedule_response.status_code}")
-            st.error(f"Response: {schedule_response.text[:200]}")
+            st.error(f"Response: {schedule_response.text[:500]}")
             return None
         
-        schedules = schedule_response.json()
+        try:
+            schedules = schedule_response.json()
+        except:
+            st.error(f"Could not parse schedule response as JSON: {schedule_response.text[:500]}")
+            return None
+            
         if not schedules or len(schedules) == 0:
             st.error("No schedules available")
             return None
@@ -73,32 +78,53 @@ def get_item_by_code(item_code):
         latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', ''), reverse=True)[0]
         schedule_code = latest_schedule.get('schedule_code')
         
-        # Now search for the item
+        st.info(f"Using schedule: {schedule_code}")
+        
+        # Now search for the item - try with uppercase code
         url = f"{api_base}/items"
         params = {
-            'pbs_code': item_code,
+            'pbs_code': item_code.upper(),
             'schedule_code': schedule_code,
-            'limit': 10
+            'limit': 100
         }
         
         response = requests.get(url, headers=get_headers(), params=params, timeout=30)
         
+        # Debug: show what we got
+        st.write(f"Response status: {response.status_code}")
+        
         if response.status_code == 200:
-            data = response.json()
+            try:
+                data = response.json()
+            except:
+                st.error(f"Could not parse items response as JSON: {response.text[:500]}")
+                return None
+                
+            st.write(f"Response type: {type(data)}")
+            st.write(f"Number of results: {len(data) if isinstance(data, list) else 'not a list'}")
+            
             if isinstance(data, list) and len(data) > 0:
+                # Filter to exact match on PBS code
+                exact_matches = [item for item in data if item.get('pbs_code', '').upper() == item_code.upper()]
+                if exact_matches:
+                    return exact_matches[0]
                 return data[0]
             elif isinstance(data, dict):
                 return data
             else:
+                st.warning(f"No items found with code {item_code}")
                 return None
         else:
-            st.error(f"API Error (Status {response.status_code}): {response.text[:200]}")
+            st.error(f"API Error (Status {response.status_code})")
+            st.error(f"Response: {response.text[:500]}")
             return None
     except requests.exceptions.Timeout:
         st.error("Request timed out. The PBS API may be slow or unavailable.")
         return None
     except Exception as e:
         st.error(f"Error fetching data: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
 
 def search_items(drug_name=None):
@@ -112,7 +138,12 @@ def search_items(drug_name=None):
             st.error(f"Failed to get schedule info. Status: {schedule_response.status_code}")
             return None
         
-        schedules = schedule_response.json()
+        try:
+            schedules = schedule_response.json()
+        except:
+            st.error(f"Could not parse schedule response as JSON")
+            return None
+            
         if not schedules or len(schedules) == 0:
             st.error("No schedules available")
             return None
@@ -121,35 +152,53 @@ def search_items(drug_name=None):
         latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', ''), reverse=True)[0]
         schedule_code = latest_schedule.get('schedule_code')
         
+        st.info(f"Using schedule: {schedule_code}")
+        
         url = f"{api_base}/items"
         params = {
             'schedule_code': schedule_code,
-            'limit': 50
+            'limit': 100
         }
         
+        # Try searching with drug name filter
         if drug_name:
-            params['li_drug_name'] = drug_name
+            params['filter'] = f"li_drug_name:like:{drug_name}"
         
         response = requests.get(url, headers=get_headers(), params=params, timeout=30)
         
+        st.write(f"Response status: {response.status_code}")
+        
         if response.status_code == 200:
-            data = response.json()
+            try:
+                data = response.json()
+            except:
+                st.error(f"Could not parse response as JSON")
+                return None
+                
             if isinstance(data, list):
-                # Filter by drug name in results if needed
+                # Filter by drug name in results if the API filter didn't work
                 if drug_name:
-                    filtered = [item for item in data if drug_name.lower() in 
-                               (item.get('li_drug_name', '') or item.get('drug_name', '') or '').lower()]
-                    return {'items': filtered if filtered else data}
-                return {'items': data}
+                    filtered = []
+                    for item in data:
+                        item_drug = (item.get('li_drug_name', '') or 
+                                   item.get('drug_name', '') or 
+                                   item.get('name', '') or '').lower()
+                        if drug_name.lower() in item_drug:
+                            filtered.append(item)
+                    return {'items': filtered if filtered else data[:20]}
+                return {'items': data[:20]}
             return None
         else:
-            st.error(f"API Error (Status {response.status_code}): {response.text[:200]}")
+            st.error(f"API Error (Status {response.status_code})")
+            st.error(f"Response: {response.text[:500]}")
             return None
     except requests.exceptions.Timeout:
         st.error("Request timed out. The PBS API may be slow or unavailable.")
         return None
     except Exception as e:
         st.error(f"Error searching: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
 
 def format_authority_application(item_code, restrictions, provider_num):
