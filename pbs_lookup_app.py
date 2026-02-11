@@ -110,6 +110,10 @@ def get_restriction_texts(pbs_code, schedule_code):
             # Filter to only the ones we need
             matching_restrictions = [r for r in all_restrictions_list if r.get('res_code') in restriction_codes]
             
+            st.write(f"DEBUG: Total restrictions in schedule: {len(all_restrictions_list)}")
+            st.write(f"DEBUG: Matching restrictions: {len(matching_restrictions)}")
+            st.write(f"DEBUG: Looking for res_codes: {restriction_codes}")
+            
             # Build list of restriction objects with formatted text
             restriction_list = []
             for restriction in matching_restrictions:
@@ -322,6 +326,9 @@ def display_item_details(item_data, schedule_code=None):
     if item_code != 'N/A' and schedule_code:
         with st.spinner("Fetching restriction details..."):
             restriction_list = get_restriction_texts(item_code, schedule_code)
+            st.write(f"DEBUG: Found {len(restriction_list)} restrictions")
+            for r in restriction_list:
+                st.write(f"DEBUG: Restriction - {r['label']}")
     
     # Determine authority type
     benefit_type_code = item_data.get('benefit_type_code', '')
