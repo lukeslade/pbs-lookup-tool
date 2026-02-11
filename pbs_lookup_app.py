@@ -355,24 +355,6 @@ def display_item_details(item_data, schedule_code=None):
                  item_data.get('drug_name') or 
                  'N/A')
     
-    # Use session state to cache restriction list
-    cache_key = f"restrictions_{item_code}_{schedule_code}"
-    
-    if cache_key not in st.session_state:
-        # Get restrictions using the PBS code and schedule
-        if item_code != 'N/A' and schedule_code:
-            with st.spinner("Fetching restriction details..."):
-                restriction_list = get_restriction_texts(item_code, schedule_code)
-                st.session_state[cache_key] = restriction_list
-                st.write(f"DEBUG: Found {len(restriction_list)} restrictions")
-                for r in restriction_list:
-                    st.write(f"DEBUG: Restriction - {r['label']}")
-        else:
-            st.session_state[cache_key] = []
-    
-    restriction_list = st.session_state[cache_key]
-    selected_restriction_text = "No restrictions"
-    
     # Determine authority type
     benefit_type_code = item_data.get('benefit_type_code', '')
     
@@ -402,51 +384,73 @@ def display_item_details(item_data, schedule_code=None):
         with st.expander("View all item data"):
             st.json(item_data)
     
-    # Show restrictions with dropdown if multiple exist
-    if restriction_list and len(restriction_list) > 0:
-        st.divider()
-        st.subheader("Restrictions")
-        
-        if len(restriction_list) > 1:
-            # Create dropdown for multiple restrictions
-            restriction_options = {r['label']: r for r in restriction_list}
+    # Get restriction codes
+    if item_code != 'N/A' and schedule_code:
+        try:
+            url = f"{api_base}/item-restriction-relationships"
+            params = {
+                'pbs_code': item_code,
+                'schedule_code': schedule_code,
+                'limit': 50
+            }
             
-            selected_label = st.selectbox(
-                "Select restriction criteria:",
-                options=list(restriction_options.keys()),
-                key=f"restriction_select_{item_code}"
-            )
+            response = requests.get(url, headers=get_headers(), params=params, timeout=30)
             
-            selected_restriction = restriction_options[selected_label]
-            selected_restriction_text = selected_restriction['text']
-            
-        else:
-            # Only one restriction
-            selected_restriction_text = restriction_list[0]['text']
-        
-        st.text_area("", value=selected_restriction_text, height=400, disabled=True, key=f"restrictions_{item_code}")
-    
-    # If authority required, show formatted application
-    if benefit_type_code in ['A', 'S']:
-        st.divider()
-        st.subheader("Authority Application")
-        
-        application_text = format_authority_application(item_code, selected_restriction_text, provider_number)
-        
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.text_area(
-                "Copy the text below for your authority application:",
-                value=application_text,
-                height=300,
-                key=f"app_{item_code}"
-            )
-        with col2:
-            st.write("")
-            st.write("")
-            if st.button("📋 Copy to Clipboard", key=f"copy_{item_code}"):
-                st.code(application_text, language=None)
-                st.success("Text ready to copy above!")
+            if response.status_code == 200:
+                data = response.json()
+                
+                if isinstance(data, dict) and 'data' in data:
+                    relationships = data['data']
+                elif isinstance(data, list):
+                    relationships = data
+                else:
+                    relationships = []
+                
+                if relationships:
+                    restriction_codes = list(set([r.get('res_code') for r in relationships if r.get('res_code')]))
+                    
+                    st.divider()
+                    st.subheader("Restriction Information")
+                    
+                    st.info(f"""
+                    **Restriction Codes Found:** {', '.join(restriction_codes)}
+                    
+                    Due to PBS API rate limiting, please:
+                    1. Visit the [PBS Website](https://www.pbs.gov.au/medicine/item/{item_code}) to view full restriction criteria
+                    2. Copy the relevant criteria below
+                    """)
+                    
+                    # Allow user to paste/type restriction criteria
+                    restriction_text = st.text_area(
+                        "Paste or type the restriction criteria from PBS website:",
+                        height=300,
+                        placeholder="Example:\nStage IV (metastatic) non-small cell lung cancer (NSCLC)\nTreatment Phase: Initial treatment\n\nClinical criteria:\n• Patient must not have previously been treated...",
+                        key=f"manual_restrictions_{item_code}"
+                    )
+                    
+                    # If authority required, show formatted application
+                    if benefit_type_code in ['A', 'S'] and restriction_text:
+                        st.divider()
+                        st.subheader("Authority Application")
+                        
+                        application_text = format_authority_application(item_code, restriction_text, provider_number)
+                        
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.text_area(
+                                "Copy the text below for your authority application:",
+                                value=application_text,
+                                height=300,
+                                key=f"app_{item_code}"
+                            )
+                        with col2:
+                            st.write("")
+                            st.write("")
+                            if st.button("📋 Copy to Clipboard", key=f"copy_{item_code}"):
+                                st.code(application_text, language=None)
+                                st.success("Text ready to copy above!")
+        except Exception as e:
+            st.warning(f"Could not fetch restriction codes: {str(e)}")
 
 # Tab 1: Search by Item Code
 with tab1:
