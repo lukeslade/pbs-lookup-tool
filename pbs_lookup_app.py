@@ -52,6 +52,49 @@ def get_headers():
         headers["Subscription-Key"] = subscription_key  # Note: Capital S and K
     return headers
 
+def get_restrictions_for_item(pbs_code, schedule_code, li_item_id):
+    """Fetch restriction codes for an item using item-restriction-relationships endpoint"""
+    try:
+        url = f"{api_base}/item-restriction-relationships"
+        params = {
+            'pbs_code': pbs_code,
+            'schedule_code': schedule_code,
+            'limit': 50
+        }
+        
+        st.write(f"DEBUG: Fetching item-restriction-relationships from: {url}")
+        st.write(f"DEBUG: Params: {params}")
+        
+        response = requests.get(url, headers=get_headers(), params=params, timeout=30)
+        
+        st.write(f"DEBUG: item-restriction-relationships response status: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Check if data is wrapped in a dict with 'data' key
+            if isinstance(data, dict) and 'data' in data:
+                data = data['data']
+            
+            st.write(f"DEBUG: Found {len(data) if isinstance(data, list) else 0} restriction relationships")
+            
+            if isinstance(data, list) and len(data) > 0:
+                # Return all restriction codes for this item
+                restriction_codes = [rel.get('res_code') for rel in data if rel.get('res_code')]
+                st.write(f"DEBUG: Restriction codes: {restriction_codes}")
+                return restriction_codes
+            else:
+                st.write(f"DEBUG: No restriction relationships found")
+                return []
+        else:
+            st.write(f"DEBUG: API error: {response.text[:500]}")
+            return []
+    except Exception as e:
+        st.warning(f"Could not fetch restriction relationships: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
+        return []
+
 def get_restriction_text(restriction_code, schedule_code):
     """Fetch restriction text from the restrictions endpoint"""
     try:
@@ -79,7 +122,7 @@ def get_restriction_text(restriction_code, schedule_code):
                 st.write(f"DEBUG: Extracted data array, length: {len(data) if isinstance(data, list) else 'not a list'}")
             
             if isinstance(data, list) and len(data) > 0:
-                st.write(f"DEBUG: First restriction: {str(data[0])[:500]}")
+                st.write(f"DEBUG: First restriction keys: {list(data[0].keys())}")
                 # Get the restriction text
                 restriction = data[0]
                 
@@ -110,7 +153,7 @@ def get_restriction_text(restriction_code, schedule_code):
                             prescribing_data = prescribing_data['data']
                         
                         if isinstance(prescribing_data, list) and len(prescribing_data) > 0:
-                            st.write(f"DEBUG: First prescribing text: {str(prescribing_data[0])[:500]}")
+                            st.write(f"DEBUG: Found prescribing text, length: {len(prescribing_data[0].get('prescribing_txt', ''))}")
                             return prescribing_data[0].get('prescribing_txt', 'No restriction text available')
                 
                 # If no prescribing text, return what we can from the restriction
@@ -316,10 +359,10 @@ def display_item_details(item_data, schedule_code=None):
         return
     
     # Extract relevant information - PBS API v3 field names
-    item_code = (item_data.get('pbs_code') or 
-                 item_data.get('code') or 
-                 item_data.get('item_code') or
-                 'N/A')
+    pbs_code = (item_data.get('pbs_code') or 
+                item_data.get('code') or 
+                item_data.get('item_code') or
+                'N/A')
     
     # Get drug name - check multiple possible fields
     drug_name = (item_data.get('li_drug_name') or
@@ -328,29 +371,28 @@ def display_item_details(item_data, schedule_code=None):
                  item_data.get('li_item_id') or
                  'N/A')
     
-    # Get restriction code and fetch actual text
-    st.write(f"DEBUG: All item data keys: {list(item_data.keys())}")
-    st.write(f"DEBUG: Full item data: {item_data}")
+    li_item_id = item_data.get('li_item_id')
     
-    restriction_code = item_data.get('restriction_code')
-    st.write(f"DEBUG: Item restriction_code field: {restriction_code}")
-    st.write(f"DEBUG: Item res_code field: {item_data.get('res_code')}")
-    
-    # Try alternate field names
-    if not restriction_code:
-        restriction_code = item_data.get('res_code')
-    
+    # Fetch restriction codes using the relationship endpoint
     restrictions = "No restrictions"
+    restriction_codes = []
     
-    if restriction_code and schedule_code:
+    if schedule_code and pbs_code != 'N/A':
         with st.spinner("Fetching restriction details..."):
-            restriction_text = get_restriction_text(restriction_code, schedule_code)
-            if restriction_text:
-                restrictions = restriction_text
-            else:
-                restrictions = f"Restriction Code: {restriction_code}\nSee PBS website for full details"
-    elif restriction_code:
-        restrictions = f"Restriction Code: {restriction_code}\nSee PBS website for full details"
+            restriction_codes = get_restrictions_for_item(pbs_code, schedule_code, li_item_id)
+            
+            if restriction_codes:
+                # Fetch the text for each restriction
+                all_restriction_texts = []
+                for res_code in restriction_codes:
+                    restriction_text = get_restriction_text(res_code, schedule_code)
+                    if restriction_text:
+                        all_restriction_texts.append(f"Restriction {res_code}:\n{restriction_text}")
+                
+                if all_restriction_texts:
+                    restrictions = "\n\n".join(all_restriction_texts)
+                else:
+                    restrictions = f"Restriction codes: {', '.join(restriction_codes)}\nSee PBS website for full details"
     
     # Determine authority type based on PBS API fields
     benefit_type_code = item_data.get('benefit_type_code', '')
@@ -369,11 +411,11 @@ def display_item_details(item_data, schedule_code=None):
     
     with col1:
         st.subheader("Item Details")
-        st.write(f"**Item Code:** {item_code}")
+        st.write(f"**Item Code:** {pbs_code}")
         st.write(f"**Drug Name:** {drug_name}")
         st.write(f"**Authority Type:** {authority_type}")
-        if restriction_code:
-            st.write(f"**Restriction Code:** {restriction_code}")
+        if restriction_codes:
+            st.write(f"**Restriction Codes:** {', '.join(restriction_codes)}")
     
     with col2:
         st.subheader("Additional Details")
@@ -388,14 +430,14 @@ def display_item_details(item_data, schedule_code=None):
     if restrictions and restrictions != "No restrictions":
         st.divider()
         st.subheader("Restrictions")
-        st.text_area("", value=restrictions, height=300, disabled=True, key=f"restrictions_{item_code}")
+        st.text_area("", value=restrictions, height=300, disabled=True, key=f"restrictions_{pbs_code}")
     
     # If authority required, show formatted application
     if benefit_type_code in ['A', 'S']:
         st.divider()
         st.subheader("Authority Application")
         
-        application_text = format_authority_application(item_code, restrictions, provider_number)
+        application_text = format_authority_application(pbs_code, restrictions, provider_number)
         
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -403,12 +445,12 @@ def display_item_details(item_data, schedule_code=None):
                 "Copy the text below for your authority application:",
                 value=application_text,
                 height=250,
-                key=f"app_{item_code}"
+                key=f"app_{pbs_code}"
             )
         with col2:
             st.write("")
             st.write("")
-            if st.button("📋 Copy to Clipboard", key=f"copy_{item_code}"):
+            if st.button("📋 Copy to Clipboard", key=f"copy_{pbs_code}"):
                 st.code(application_text, language=None)
                 st.success("Text ready to copy above!")
 
