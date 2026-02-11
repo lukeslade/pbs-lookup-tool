@@ -101,8 +101,12 @@ def get_restriction_texts(pbs_code, schedule_code):
                 'limit': 10
             }
             
+            st.write(f"DEBUG: Fetching restriction {res_code}...")
+            
             try:
                 restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
+                
+                st.write(f"DEBUG: Response status for {res_code}: {restrictions_response.status_code}")
                 
                 if restrictions_response.status_code == 200:
                     restrictions_data = restrictions_response.json()
@@ -112,16 +116,22 @@ def get_restriction_texts(pbs_code, schedule_code):
                     elif isinstance(restrictions_data, list):
                         restrictions = restrictions_data
                     else:
+                        st.write(f"DEBUG: Unexpected response type for {res_code}")
                         continue
                     
+                    st.write(f"DEBUG: Found {len(restrictions)} restriction(s) for {res_code}")
+                    
                     if not restrictions or len(restrictions) == 0:
-                        st.write(f"DEBUG: No restriction found for {res_code}")
+                        st.write(f"DEBUG: No restriction data found for {res_code}")
                         continue
                     
                     restriction = restrictions[0]
+                    st.write(f"DEBUG: Restriction {res_code} fields: {list(restriction.keys())}")
                     
                     # Get the text - li_html_text is the main field
                     text = restriction.get('li_html_text') or restriction.get('schedule_html_text', '')
+                    
+                    st.write(f"DEBUG: Text length for {res_code}: {len(text) if text else 0}")
                     
                     if text:
                         # Remove HTML tags and format nicely
