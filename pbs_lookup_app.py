@@ -88,85 +88,96 @@ def get_restriction_texts(pbs_code, schedule_code):
         if not restriction_codes:
             return []
         
-        # Fetch all restrictions for this schedule in one call
-        restrictions_url = f"{api_base}/restrictions"
-        restrictions_params = {
-            'schedule_code': schedule_code,
-            'limit': 1000  # Get many at once to avoid rate limiting
-        }
+        st.write(f"DEBUG: Looking for {len(restriction_codes)} restriction codes: {restriction_codes}")
         
-        restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
+        # Fetch each restriction individually to avoid pagination issues
+        restriction_list = []
         
-        if restrictions_response.status_code == 200:
-            restrictions_data = restrictions_response.json()
+        for res_code in restriction_codes:
+            restrictions_url = f"{api_base}/restrictions"
+            restrictions_params = {
+                'res_code': res_code,
+                'schedule_code': schedule_code,
+                'limit': 10
+            }
             
-            if isinstance(restrictions_data, dict) and 'data' in restrictions_data:
-                all_restrictions_list = restrictions_data['data']
-            elif isinstance(restrictions_data, list):
-                all_restrictions_list = restrictions_data
-            else:
-                return []
-            
-            # Filter to only the ones we need
-            matching_restrictions = [r for r in all_restrictions_list if r.get('res_code') in restriction_codes]
-            
-            st.write(f"DEBUG: Total restrictions in schedule: {len(all_restrictions_list)}")
-            st.write(f"DEBUG: Matching restrictions: {len(matching_restrictions)}")
-            st.write(f"DEBUG: Looking for res_codes: {restriction_codes}")
-            
-            # Build list of restriction objects with formatted text
-            restriction_list = []
-            for restriction in matching_restrictions:
-                res_code = restriction.get('res_code', '')
+            try:
+                restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
                 
-                # Get the text - li_html_text is the main field
-                text = restriction.get('li_html_text') or restriction.get('schedule_html_text', '')
+                if restrictions_response.status_code == 200:
+                    restrictions_data = restrictions_response.json()
+                    
+                    if isinstance(restrictions_data, dict) and 'data' in restrictions_data:
+                        restrictions = restrictions_data['data']
+                    elif isinstance(restrictions_data, list):
+                        restrictions = restrictions_data
+                    else:
+                        continue
+                    
+                    if not restrictions or len(restrictions) == 0:
+                        st.write(f"DEBUG: No restriction found for {res_code}")
+                        continue
+                    
+                    restriction = restrictions[0]
+                    
+                    # Get the text - li_html_text is the main field
+                    text = restriction.get('li_html_text') or restriction.get('schedule_html_text', '')
+                    
+                    if text:
+                        # Remove HTML tags and format nicely
+                        # First replace common HTML elements with newlines
+                        text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+                        text = text.replace('</p>', '\n\n').replace('<p>', '')
+                        text = text.replace('</li>', '\n').replace('<li>', '• ')
+                        text = text.replace('</div>', '\n').replace('<div>', '')
+                        
+                        # Remove remaining HTML tags
+                        clean_text = re.sub('<[^<]+?>', '', text)
+                        
+                        # Clean up whitespace
+                        clean_text = re.sub(r'\n\s*\n\s*\n+', '\n\n', clean_text)  # Max 2 newlines
+                        clean_text = re.sub(r' +', ' ', clean_text)  # Collapse multiple spaces
+                        
+                        # Decode HTML entities
+                        clean_text = clean_text.replace('&nbsp;', ' ').replace('&amp;', '&')
+                        clean_text = clean_text.replace('&lt;', '<').replace('&gt;', '>')
+                        
+                        clean_text = clean_text.strip()
+                        
+                        if clean_text:
+                            treatment_phase = restriction.get('treatment_phase', '')
+                            authority_method = restriction.get('authority_method', '')
+                            
+                            # Create a descriptive label for this restriction
+                            label_parts = []
+                            if treatment_phase:
+                                label_parts.append(treatment_phase)
+                            if authority_method:
+                                label_parts.append(f"({authority_method})")
+                            
+                            label = " - ".join(label_parts) if label_parts else res_code
+                            
+                            st.write(f"DEBUG: Found restriction: {label}")
+                            
+                            restriction_list.append({
+                                'res_code': res_code,
+                                'label': label,
+                                'text': clean_text,
+                                'treatment_phase': treatment_phase,
+                                'authority_method': authority_method
+                            })
+                    else:
+                        st.write(f"DEBUG: No text found for {res_code}")
+                        
+                # Small delay to avoid rate limiting
+                import time
+                time.sleep(0.1)
                 
-                if text:
-                    # Remove HTML tags and format nicely
-                    # First replace common HTML elements with newlines
-                    text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
-                    text = text.replace('</p>', '\n\n').replace('<p>', '')
-                    text = text.replace('</li>', '\n').replace('<li>', '• ')
-                    text = text.replace('</div>', '\n').replace('<div>', '')
-                    
-                    # Remove remaining HTML tags
-                    clean_text = re.sub('<[^<]+?>', '', text)
-                    
-                    # Clean up whitespace
-                    clean_text = re.sub(r'\n\s*\n\s*\n+', '\n\n', clean_text)  # Max 2 newlines
-                    clean_text = re.sub(r' +', ' ', clean_text)  # Collapse multiple spaces
-                    
-                    # Decode HTML entities
-                    clean_text = clean_text.replace('&nbsp;', ' ').replace('&amp;', '&')
-                    clean_text = clean_text.replace('&lt;', '<').replace('&gt;', '>')
-                    
-                    clean_text = clean_text.strip()
-                    
-                    if clean_text:
-                        treatment_phase = restriction.get('treatment_phase', '')
-                        authority_method = restriction.get('authority_method', '')
-                        
-                        # Create a descriptive label for this restriction
-                        label_parts = []
-                        if treatment_phase:
-                            label_parts.append(treatment_phase)
-                        if authority_method:
-                            label_parts.append(f"({authority_method})")
-                        
-                        label = " - ".join(label_parts) if label_parts else res_code
-                        
-                        restriction_list.append({
-                            'res_code': res_code,
-                            'label': label,
-                            'text': clean_text,
-                            'treatment_phase': treatment_phase,
-                            'authority_method': authority_method
-                        })
-            
-            return restriction_list
+            except Exception as e:
+                st.write(f"DEBUG: Error fetching {res_code}: {str(e)}")
+                continue
         
-        return []
+        return restriction_list
         
     except Exception as e:
         st.warning(f"Could not fetch restriction details: {str(e)}")
