@@ -1,19 +1,18 @@
 import streamlit as st
 import requests
-import pandas as pd
+from bs4 import BeautifulSoup
 import re
 
 # Set page config
 st.set_page_config(
-    page_title="PBS Item Lookup & Authority Application",
+    page_title="PBS Authority Application Tool",
     page_icon="💊",
     layout="wide"
 )
 
-# Title
-st.title("💊 PBS Item Lookup & Authority Application")
+st.title("💊 PBS Authority Application Tool")
 
-# Sidebar for hospital provider number
+# Sidebar
 st.sidebar.header("Settings")
 provider_number = st.sidebar.text_input(
     "Hospital Provider Number",
@@ -22,542 +21,202 @@ provider_number = st.sidebar.text_input(
     help="Enter your 6-digit hospital provider number"
 )
 
-# API Configuration
-st.sidebar.header("API Configuration")
-api_base = st.sidebar.text_input(
-    "PBS API Base URL",
-    value="https://data-api.health.gov.au/pbs/api/v3",
-    help="The base URL for the PBS API"
-)
+subscription_key = "2384af7c667342ceb5a736fe29f1dc6b"
 
-subscription_key = st.sidebar.text_input(
-    "Subscription Key (Optional)",
-    value="2384af7c667342ceb5a736fe29f1dc6b",
-    type="password",
-    help="Optional subscription key for PBS API. Leave blank to try public access."
-)
+# Main interface
+st.header("Search by Medication")
 
-# Main search interface
-st.header("Search PBS Items")
-
-# Initialize session state to store search results
-if 'current_item' not in st.session_state:
-    st.session_state.current_item = None
-if 'current_schedule' not in st.session_state:
-    st.session_state.current_schedule = None
-
-# Create tabs for different search methods
-tab1, tab2 = st.tabs(["Search by Item Code", "Search by Drug Name"])
-
-def get_headers():
-    """Get API request headers"""
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-    if subscription_key:
-        headers["Subscription-Key"] = subscription_key
-    return headers
-
-def get_restriction_texts(pbs_code, schedule_code):
-    """Fetch all restriction texts for an item using item-restriction-relationships"""
+def scrape_pbs_item(item_code):
+    """Scrape PBS website for item details and restrictions"""
     try:
-        # First, get the restriction relationships for this item
-        url = f"{api_base}/item-restriction-relationships"
-        params = {
-            'pbs_code': pbs_code,
-            'schedule_code': schedule_code,
-            'limit': 50
-        }
+        url = f"https://www.pbs.gov.au/medicine/item/{item_code}"
         
-        response = requests.get(url, headers=get_headers(), params=params, timeout=30)
+        st.write(f"DEBUG: Fetching from {url}")
+        
+        response = requests.get(url, timeout=30)
         
         if response.status_code != 200:
-            return []
+            return None
         
-        data = response.json()
+        soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Extract data array
-        if isinstance(data, dict) and 'data' in data:
-            relationships = data['data']
-        elif isinstance(data, list):
-            relationships = data
+        # Extract drug name
+        drug_name = None
+        h1 = soup.find('h1')
+        if h1:
+            drug_name = h1.get_text(strip=True)
+        
+        # Find all restriction sections
+        restrictions = []
+        
+        # Look for restriction content - PBS uses various div structures
+        restriction_divs = soup.find_all(['div', 'section'], class_=re.compile('restriction|criteria|authority', re.I))
+        
+        if not restriction_divs:
+            # Try finding by heading text
+            headings = soup.find_all(['h2', 'h3', 'h4'], string=re.compile('restriction|criteria|authority', re.I))
+            for heading in headings:
+                # Get the content after the heading
+                content = []
+                for sibling in heading.find_next_siblings():
+                    if sibling.name in ['h2', 'h3', 'h4']:
+                        break
+                    content.append(sibling.get_text(strip=True))
+                if content:
+                    restrictions.append({
+                        'title': heading.get_text(strip=True),
+                        'text': '\n'.join(content)
+                    })
         else:
-            return []
+            for div in restriction_divs:
+                text = div.get_text(separator='\n', strip=True)
+                if len(text) > 50:  # Only keep substantial content
+                    title = div.find(['h3', 'h4', 'strong'])
+                    title_text = title.get_text(strip=True) if title else "Restriction"
+                    restrictions.append({
+                        'title': title_text,
+                        'text': text
+                    })
         
-        if not relationships:
-            return []
+        # Try to get all text if no structured restrictions found
+        if not restrictions:
+            all_text = soup.get_text(separator='\n')
+            st.write("DEBUG: Full page text (first 2000 chars):")
+            st.code(all_text[:2000])
         
-        # Get all unique restriction codes
-        restriction_codes = list(set([r.get('res_code') for r in relationships if r.get('res_code')]))
-        
-        if not restriction_codes:
-            return []
-        
-        st.write(f"DEBUG: Looking for {len(restriction_codes)} restriction codes: {restriction_codes}")
-        
-        # Fetch restrictions one by one with proper delays to avoid rate limiting
-        # This is the most reliable approach given the API constraints
-        restriction_list = []
-        
-        import time
-        
-        for idx, res_code in enumerate(restriction_codes):
-            # Wait between requests (except first one)
-            if idx > 0:
-                wait_time = 5  # 5 seconds between each request
-                st.write(f"DEBUG: Waiting {wait_time} seconds before next request...")
-                time.sleep(wait_time)
-            
-            restrictions_url = f"{api_base}/restrictions"
-            restrictions_params = {
-                'res_code': res_code,
-                'schedule_code': schedule_code,
-                'limit': 10
-            }
-            
-            st.write(f"DEBUG: Fetching restriction {idx+1}/{len(restriction_codes)}: {res_code}")
-            
-            try:
-                restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
-                
-                st.write(f"DEBUG: Response status: {restrictions_response.status_code}")
-                
-                # Handle rate limiting
-                if restrictions_response.status_code == 429:
-                    st.warning(f"Rate limited on {res_code}, waiting 30 seconds...")
-                    time.sleep(30.0)
-                    restrictions_response = requests.get(restrictions_url, headers=get_headers(), params=restrictions_params, timeout=30)
-                    st.write(f"DEBUG: Retry response status: {restrictions_response.status_code}")
-                
-                if restrictions_response.status_code == 200:
-                    restrictions_data = restrictions_response.json()
-                    
-                    if isinstance(restrictions_data, dict) and 'data' in restrictions_data:
-                        restrictions = restrictions_data['data']
-                    elif isinstance(restrictions_data, list):
-                        restrictions = restrictions_data
-                    else:
-                        st.write(f"DEBUG: Unexpected response format")
-                        continue
-                    
-                    if not restrictions or len(restrictions) == 0:
-                        st.write(f"DEBUG: No data found for {res_code}")
-                        continue
-                    
-                    restriction = restrictions[0]
-                    
-                    # Get the text
-                    text = restriction.get('li_html_text') or restriction.get('schedule_html_text', '')
-                    
-                    if text:
-                        # Remove HTML tags and format nicely
-                        text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
-                        text = text.replace('</p>', '\n\n').replace('<p>', '')
-                        text = text.replace('</li>', '\n').replace('<li>', '• ')
-                        text = text.replace('</div>', '\n').replace('<div>', '')
-                        
-                        # Remove remaining HTML tags
-                        clean_text = re.sub('<[^<]+?>', '', text)
-                        
-                        # Clean up whitespace
-                        clean_text = re.sub(r'\n\s*\n\s*\n+', '\n\n', clean_text)
-                        clean_text = re.sub(r' +', ' ', clean_text)
-                        
-                        # Decode HTML entities
-                        clean_text = clean_text.replace('&nbsp;', ' ').replace('&amp;', '&')
-                        clean_text = clean_text.replace('&lt;', '<').replace('&gt;', '>')
-                        
-                        clean_text = clean_text.strip()
-                        
-                        if clean_text:
-                            treatment_phase = restriction.get('treatment_phase', '')
-                            authority_method = restriction.get('authority_method', '')
-                            
-                            # Create a descriptive label
-                            label_parts = []
-                            if treatment_phase:
-                                label_parts.append(treatment_phase)
-                            if authority_method:
-                                label_parts.append(f"({authority_method})")
-                            
-                            label = " - ".join(label_parts) if label_parts else res_code
-                            
-                            st.write(f"DEBUG: ✓ Found restriction: {res_code} - {label}")
-                            
-                            restriction_list.append({
-                                'res_code': res_code,
-                                'label': label,
-                                'text': clean_text,
-                                'treatment_phase': treatment_phase,
-                                'authority_method': authority_method
-                            })
-                    else:
-                        st.write(f"DEBUG: No text in {res_code}")
-                else:
-                    st.write(f"DEBUG: Failed to fetch {res_code}, status: {restrictions_response.status_code}")
-                    
-            except Exception as e:
-                st.write(f"DEBUG: Error with {res_code}: {str(e)}")
-                continue
-        
-        st.write(f"DEBUG: Total restrictions found: {len(restriction_list)}")
-        return restriction_list
-        
-    except Exception as e:
-        st.warning(f"Could not fetch restriction details: {str(e)}")
-        return []
-
-def get_item_by_code(item_code):
-    """Fetch PBS item by code - returns (item_data, schedule_code) tuple"""
-    try:
-        # First get the latest schedule
-        schedule_url = f"{api_base}/schedules"
-        schedule_response = requests.get(schedule_url, headers=get_headers(), timeout=30)
-        
-        if schedule_response.status_code != 200:
-            st.error(f"Failed to get schedule info. Status: {schedule_response.status_code}")
-            return None, None
-        
-        schedules_resp = schedule_response.json()
-        
-        # Extract the data array
-        if isinstance(schedules_resp, dict) and 'data' in schedules_resp:
-            schedules = schedules_resp['data']
-        else:
-            st.error("Unexpected schedule response structure")
-            return None, None
-            
-        if not schedules:
-            st.error("No schedules available")
-            return None, None
-        
-        # Get the latest schedule code
-        latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', 0), reverse=True)[0]
-        schedule_code = latest_schedule.get('schedule_code')
-        
-        st.info(f"Using schedule: {schedule_code} (Effective: {latest_schedule.get('effective_date')})")
-        
-        # Now search for the item
-        url = f"{api_base}/items"
-        params = {
-            'pbs_code': item_code.upper(),
-            'schedule_code': schedule_code,
-            'limit': 100
+        return {
+            'drug_name': drug_name,
+            'restrictions': restrictions,
+            'url': url
         }
         
-        response = requests.get(url, headers=get_headers(), params=params, timeout=30)
-        
-        if response.status_code == 200:
-            items_resp = response.json()
-            
-            # Extract items from data array
-            if isinstance(items_resp, dict) and 'data' in items_resp:
-                items = items_resp['data']
-                
-                if len(items) > 0:
-                    # Filter to exact match on PBS code
-                    exact_matches = [item for item in items if item.get('pbs_code', '').upper() == item_code.upper()]
-                    if exact_matches:
-                        return exact_matches[0], schedule_code
-                    return items[0], schedule_code
-                else:
-                    st.warning(f"No items found with code {item_code}")
-                    return None, None
-            else:
-                st.error("Unexpected items response structure")
-                return None, None
-        else:
-            st.error(f"API Error (Status {response.status_code})")
-            return None, None
     except Exception as e:
-        st.error(f"Error fetching data: {str(e)}")
-        return None, None
-
-def search_items(drug_name=None):
-    """Search PBS items by drug name"""
-    try:
-        # First get the latest schedule
-        schedule_url = f"{api_base}/schedules"
-        schedule_response = requests.get(schedule_url, headers=get_headers(), timeout=30)
-        
-        if schedule_response.status_code != 200:
-            st.error("Failed to get schedule info")
-            return None
-        
-        schedules_resp = schedule_response.json()
-        
-        if isinstance(schedules_resp, dict) and 'data' in schedules_resp:
-            schedules = schedules_resp['data']
-        else:
-            return None
-            
-        if not schedules:
-            return None
-        
-        latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', 0), reverse=True)[0]
-        schedule_code = latest_schedule.get('schedule_code')
-        
-        st.info(f"Using schedule: {schedule_code} (Effective: {latest_schedule.get('effective_date')})")
-        
-        url = f"{api_base}/items"
-        params = {
-            'schedule_code': schedule_code,
-            'limit': 200
-        }
-        
-        if drug_name:
-            params['filter'] = f"li_drug_name:like:{drug_name}"
-        
-        response = requests.get(url, headers=get_headers(), params=params, timeout=30)
-        
-        if response.status_code == 200:
-            items_resp = response.json()
-            
-            if isinstance(items_resp, dict) and 'data' in items_resp:
-                items = items_resp['data']
-                
-                # Filter by drug name if API filter didn't work
-                if drug_name:
-                    filtered = []
-                    for item in items:
-                        item_drug = (item.get('li_drug_name', '') or 
-                                   item.get('drug_name', '') or '').lower()
-                        if drug_name.lower() in item_drug:
-                            filtered.append(item)
-                    return {'items': filtered if filtered else items, 'schedule_code': schedule_code}
-                return {'items': items, 'schedule_code': schedule_code}
-        
-        return None
-    except Exception as e:
-        st.error(f"Error searching: {str(e)}")
+        st.error(f"Error scraping PBS website: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return None
 
-def format_authority_application(item_code, restrictions, provider_num):
+def format_authority_application(item_code, criteria, provider_num):
     """Format the authority application text"""
-    application = f"""Hospital Provider Number [{provider_num}]
+    return f"""Hospital Provider Number [{provider_num}]
 {item_code}
-{restrictions}"""
-    return application
+{criteria}"""
 
-def display_item_details(item_data, schedule_code=None):
-    """Display PBS item details in a formatted way"""
-    if not item_data:
-        st.warning("No item data available")
-        return
-    
-    # Extract relevant information
-    item_code = (item_data.get('pbs_code') or 
-                 item_data.get('code') or 
-                 'N/A')
-    
-    drug_name = (item_data.get('li_drug_name') or
-                 item_data.get('drug_name') or 
-                 'N/A')
-    
-    # Determine authority type
-    benefit_type_code = item_data.get('benefit_type_code', '')
-    
-    if benefit_type_code == 'A':
-        authority_type = "Phone Authority"
-    elif benefit_type_code == 'S':
-        authority_type = "Streamlined Authority"
-    elif benefit_type_code == 'U':
-        authority_type = "No authority required (Unrestricted)"
-    else:
-        authority_type = "Check PBS website for authority requirements"
-    
-    # Display in columns
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Item Details")
-        st.write(f"**Item Code:** {item_code}")
-        st.write(f"**Drug Name:** {drug_name}")
-        st.write(f"**Authority Type:** {authority_type}")
-    
-    with col2:
-        st.subheader("Additional Details")
-        st.write(f"**Program:** {item_data.get('program_code', 'N/A')}")
-        st.write(f"**Benefit Type:** {benefit_type_code or 'N/A'}")
-        
-        with st.expander("View all item data"):
-            st.json(item_data)
-    
-    # Get restriction codes
-    if item_code != 'N/A' and schedule_code:
-        try:
-            url = f"{api_base}/item-restriction-relationships"
-            params = {
-                'pbs_code': item_code,
-                'schedule_code': schedule_code,
-                'limit': 50
-            }
+# Search input
+medication_name = st.text_input(
+    "Enter medication name",
+    placeholder="e.g., pembrolizumab, nivolumab, lenalidomide",
+    help="Enter the medication name to search"
+)
+
+item_code_manual = st.text_input(
+    "Or enter PBS item code directly",
+    placeholder="e.g., 12119W",
+    help="Enter PBS item code if you know it"
+)
+
+if st.button("Search", type="primary"):
+    if item_code_manual:
+        # Direct item code lookup
+        with st.spinner(f"Fetching details for {item_code_manual}..."):
+            result = scrape_pbs_item(item_code_manual)
             
-            response = requests.get(url, headers=get_headers(), params=params, timeout=30)
-            
-            if response.status_code == 200:
-                data = response.json()
+            if result:
+                st.success(f"Found: {result['drug_name'] or item_code_manual}")
                 
-                if isinstance(data, dict) and 'data' in data:
-                    relationships = data['data']
-                elif isinstance(data, list):
-                    relationships = data
-                else:
-                    relationships = []
+                st.subheader("Item Details")
+                st.write(f"**Item Code:** {item_code_manual}")
+                st.write(f"**Drug Name:** {result['drug_name']}")
+                st.write(f"**PBS Link:** [{result['url']}]({result['url']})")
                 
-                if relationships:
-                    restriction_codes = list(set([r.get('res_code') for r in relationships if r.get('res_code')]))
-                    
+                if result['restrictions']:
                     st.divider()
-                    st.subheader("Restriction Information")
+                    st.subheader("Restriction Criteria")
                     
-                    st.info(f"""
-                    **Restriction Codes Found:** {', '.join(restriction_codes)}
+                    if len(result['restrictions']) > 1:
+                        # Multiple restrictions - show dropdown
+                        restriction_options = {r['title']: r['text'] for r in result['restrictions']}
+                        
+                        selected_title = st.selectbox(
+                            "Select indication/treatment phase:",
+                            options=list(restriction_options.keys())
+                        )
+                        
+                        selected_text = restriction_options[selected_title]
+                    else:
+                        # Single restriction
+                        selected_text = result['restrictions'][0]['text']
                     
-                    Due to PBS API rate limiting, please:
-                    1. Visit the [PBS Website](https://www.pbs.gov.au/medicine/item/{item_code}) to view full restriction criteria
-                    2. Copy the relevant criteria below
-                    """)
-                    
-                    # Allow user to paste/type restriction criteria
-                    restriction_text = st.text_area(
-                        "Paste or type the restriction criteria from PBS website:",
+                    st.text_area(
+                        "Restriction criteria:",
+                        value=selected_text,
                         height=300,
-                        placeholder="Example:\nStage IV (metastatic) non-small cell lung cancer (NSCLC)\nTreatment Phase: Initial treatment\n\nClinical criteria:\n• Patient must not have previously been treated...",
-                        key=f"manual_restrictions_{item_code}"
+                        disabled=True
                     )
                     
-                    # If authority required, show formatted application
-                    if benefit_type_code in ['A', 'S'] and restriction_text:
+                    st.divider()
+                    st.subheader("Authority Application")
+                    
+                    application_text = format_authority_application(
+                        item_code_manual,
+                        selected_text,
+                        provider_number
+                    )
+                    
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.text_area(
+                            "Copy the text below:",
+                            value=application_text,
+                            height=300
+                        )
+                    with col2:
+                        st.write("")
+                        st.write("")
+                        if st.button("📋 Copy"):
+                            st.code(application_text)
+                            st.success("Text ready to copy!")
+                else:
+                    st.warning("No restriction criteria found on PBS website. The page may have a different structure.")
+                    st.info(f"Please visit the PBS website directly: {result['url']}")
+                    
+                    # Provide manual entry option
+                    manual_criteria = st.text_area(
+                        "Paste criteria from PBS website:",
+                        height=300,
+                        placeholder="Copy and paste the restriction criteria here..."
+                    )
+                    
+                    if manual_criteria:
                         st.divider()
                         st.subheader("Authority Application")
                         
-                        application_text = format_authority_application(item_code, restriction_text, provider_number)
+                        application_text = format_authority_application(
+                            item_code_manual,
+                            manual_criteria,
+                            provider_number
+                        )
                         
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.text_area(
-                                "Copy the text below for your authority application:",
-                                value=application_text,
-                                height=300,
-                                key=f"app_{item_code}"
-                            )
-                        with col2:
-                            st.write("")
-                            st.write("")
-                            if st.button("📋 Copy to Clipboard", key=f"copy_{item_code}"):
-                                st.code(application_text, language=None)
-                                st.success("Text ready to copy above!")
-        except Exception as e:
-            st.warning(f"Could not fetch restriction codes: {str(e)}")
-
-# Tab 1: Search by Item Code
-with tab1:
-    item_code_input = st.text_input(
-        "Enter PBS Item Code",
-        placeholder="e.g., 12119W",
-        help="Enter the PBS item code"
-    )
-    
-    if st.button("Search by Code", type="primary"):
-        if item_code_input:
-            with st.spinner("Fetching item details..."):
-                result = get_item_by_code(item_code_input)
-                if result and result[0]:
-                    st.session_state.current_item = result[0]
-                    st.session_state.current_schedule = result[1]
-                else:
-                    st.error(f"Item code '{item_code_input}' not found. Please check the code and try again.")
-                    st.session_state.current_item = None
-                    st.session_state.current_schedule = None
-        else:
-            st.warning("Please enter an item code")
-    
-    # Display results if they exist in session state
-    if st.session_state.current_item is not None:
-        display_item_details(st.session_state.current_item, st.session_state.current_schedule)
-
-# Tab 2: Search by Drug Name
-with tab2:
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        drug_name_input = st.text_input(
-            "Enter Drug Name",
-            placeholder="e.g., paracetamol",
-            help="Enter the drug name to search"
-        )
-    
-    with col2:
-        st.write("")
-        st.write("")
-        search_button = st.button("Search by Name", type="primary")
-    
-    if search_button:
-        if drug_name_input:
-            with st.spinner("Searching PBS database..."):
-                results = search_items(drug_name=drug_name_input)
+                        st.text_area(
+                            "Copy the text below:",
+                            value=application_text,
+                            height=300
+                        )
+            else:
+                st.error(f"Could not fetch details for item {item_code_manual}")
                 
-                if results and 'items' in results:
-                    items = results['items']
-                    schedule_code = results.get('schedule_code')
-                    
-                    if len(items) > 0:
-                        st.success(f"Found {len(items)} item(s)")
-                        
-                        if len(items) > 1:
-                            item_options = {}
-                            for item in items:
-                                pbs_code = (item.get('pbs_code') or 'N/A')
-                                drug = (item.get('li_drug_name') or item.get('drug_name') or 'Unknown')
-                                program = item.get('program_code', '')
-                                key = f"{pbs_code} - {drug} [{program}]"
-                                item_options[key] = item
-                            
-                            selected_item_key = st.selectbox(
-                                "Select an item to view details:",
-                                options=list(item_options.keys())
-                            )
-                            
-                            if selected_item_key:
-                                st.session_state.current_item = item_options[selected_item_key]
-                                st.session_state.current_schedule = schedule_code
-                        else:
-                            st.session_state.current_item = items[0]
-                            st.session_state.current_schedule = schedule_code
-                    else:
-                        st.warning(f"No items found for '{drug_name_input}'")
-                        st.session_state.current_item = None
-                        st.session_state.current_schedule = None
-                else:
-                    st.error("No results found. Please try a different search term.")
-                    st.session_state.current_item = None
-                    st.session_state.current_schedule = None
-        else:
-            st.warning("Please enter a drug name")
-    
-    # Display results if they exist in session state
-    if st.session_state.current_item is not None:
-        st.divider()
-        display_item_details(st.session_state.current_item, st.session_state.current_schedule)
+    elif medication_name:
+        st.info("Medication name search coming soon. For now, please use the PBS item code.")
+        st.write("""
+        To find your PBS item code:
+        1. Go to [pbs.gov.au](https://www.pbs.gov.au/)
+        2. Search for your medication
+        3. Find the item code (e.g., 12119W)
+        4. Enter it above
+        """)
+    else:
+        st.warning("Please enter a medication name or PBS item code")
 
 # Footer
 st.divider()
-st.caption("Data sourced from PBS Public Data API | For healthcare professional use")
-
-with st.sidebar:
-    st.divider()
-    st.subheader("ℹ️ API Information")
-    st.info("""
-    **Note:** The PBS Public API requires a subscription key.
-    
-    Get your key at:
-    [PBS Developer Portal](https://data-api-portal.health.gov.au/)
-    """)
-    
-    st.markdown("""
-    **Useful Links:**
-    - [PBS Website](https://www.pbs.gov.au/)
-    - [PBS Data Documentation](https://data.pbs.gov.au/)
-    """)
+st.caption("Data sourced from PBS website | For healthcare professional use")
