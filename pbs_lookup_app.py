@@ -1,6 +1,4 @@
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
 import re
 
 # Set page config
@@ -12,6 +10,13 @@ st.set_page_config(
 
 st.title("💊 PBS Authority Application Tool")
 
+st.info("""
+**Quick Workflow:**
+1. Enter the PBS item code (find it on pbs.gov.au)
+2. Paste the restriction criteria from the PBS website
+3. Get your formatted authority application
+""")
+
 # Sidebar
 st.sidebar.header("Settings")
 provider_number = st.sidebar.text_input(
@@ -21,202 +26,193 @@ provider_number = st.sidebar.text_input(
     help="Enter your 6-digit hospital provider number"
 )
 
-subscription_key = "2384af7c667342ceb5a736fe29f1dc6b"
+st.sidebar.divider()
+st.sidebar.subheader("How to use")
+st.sidebar.markdown("""
+1. Go to [pbs.gov.au](https://www.pbs.gov.au/)
+2. Search for your medication
+3. Click on the item code
+4. Click the red "Authority Required" section
+5. Copy the restriction criteria
+6. Paste it below
+""")
 
-# Main interface
-st.header("Search by Medication")
+# Main form
+col1, col2 = st.columns([1, 2])
 
-def scrape_pbs_item(item_code):
-    """Scrape PBS website for item details and restrictions"""
-    try:
-        url = f"https://www.pbs.gov.au/medicine/item/{item_code}"
-        
-        st.write(f"DEBUG: Fetching from {url}")
-        
-        response = requests.get(url, timeout=30)
-        
-        if response.status_code != 200:
-            return None
-        
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Extract drug name
-        drug_name = None
-        h1 = soup.find('h1')
-        if h1:
-            drug_name = h1.get_text(strip=True)
-        
-        # Find all restriction sections
-        restrictions = []
-        
-        # Look for restriction content - PBS uses various div structures
-        restriction_divs = soup.find_all(['div', 'section'], class_=re.compile('restriction|criteria|authority', re.I))
-        
-        if not restriction_divs:
-            # Try finding by heading text
-            headings = soup.find_all(['h2', 'h3', 'h4'], string=re.compile('restriction|criteria|authority', re.I))
-            for heading in headings:
-                # Get the content after the heading
-                content = []
-                for sibling in heading.find_next_siblings():
-                    if sibling.name in ['h2', 'h3', 'h4']:
-                        break
-                    content.append(sibling.get_text(strip=True))
-                if content:
-                    restrictions.append({
-                        'title': heading.get_text(strip=True),
-                        'text': '\n'.join(content)
-                    })
-        else:
-            for div in restriction_divs:
-                text = div.get_text(separator='\n', strip=True)
-                if len(text) > 50:  # Only keep substantial content
-                    title = div.find(['h3', 'h4', 'strong'])
-                    title_text = title.get_text(strip=True) if title else "Restriction"
-                    restrictions.append({
-                        'title': title_text,
-                        'text': text
-                    })
-        
-        # Try to get all text if no structured restrictions found
-        if not restrictions:
-            all_text = soup.get_text(separator='\n')
-            st.write("DEBUG: Full page text (first 2000 chars):")
-            st.code(all_text[:2000])
-        
-        return {
-            'drug_name': drug_name,
-            'restrictions': restrictions,
-            'url': url
+with col1:
+    st.subheader("Item Code")
+    item_code = st.text_input(
+        "PBS Item Code",
+        placeholder="e.g., 12119W, 10763L",
+        help="The PBS item code for your medication",
+        label_visibility="collapsed"
+    )
+    
+    if item_code:
+        pbs_url = f"https://www.pbs.gov.au/medicine/item/{item_code}"
+        st.markdown(f"[📋 Open PBS page for {item_code}]({pbs_url})")
+
+with col2:
+    st.subheader("Common Medications Quick Links")
+    
+    common_meds = {
+        "Pembrolizumab (Keytruda)": {
+            "Initial NSCLC": "12119W",
+            "Continuing NSCLC": "12119W",
+            "Melanoma": "11198E",
+        },
+        "Nivolumab (Opdivo)": {
+            "NSCLC": "11072K",
+            "Melanoma": "11036W",
+        },
+        "Bendamustine": {
+            "CLL/NHL": "10763L",
+        },
+        "Lenalidomide": {
+            "Multiple Myeloma": "5650K",
         }
-        
-    except Exception as e:
-        st.error(f"Error scraping PBS website: {str(e)}")
-        import traceback
-        st.code(traceback.format_exc())
-        return None
+    }
+    
+    selected_med = st.selectbox(
+        "Or select a common medication:",
+        [""] + list(common_meds.keys()),
+        label_visibility="collapsed"
+    )
+    
+    if selected_med:
+        indications = common_meds[selected_med]
+        if len(indications) == 1:
+            item_code = list(indications.values())[0]
+            st.success(f"Item code: **{item_code}**")
+        else:
+            indication = st.selectbox(
+                "Select indication:",
+                list(indications.keys())
+            )
+            if indication:
+                item_code = indications[indication]
+                st.success(f"Item code: **{item_code}**")
 
-def format_authority_application(item_code, criteria, provider_num):
-    """Format the authority application text"""
-    return f"""Hospital Provider Number [{provider_num}]
+st.divider()
+
+# Restriction criteria input
+st.subheader("Restriction Criteria")
+
+st.markdown("""
+**Instructions:** 
+1. Visit the PBS page for your item code (link above)
+2. Click the red "Authority Required (STREAMLINED)" or "Authority Required" button
+3. Copy ALL the text from the expanded section including:
+   - Treatment phase (if applicable)
+   - Clinical criteria  
+   - All bullet points and conditions
+4. Paste it in the box below
+""")
+
+restriction_text = st.text_area(
+    "Paste restriction criteria here:",
+    height=300,
+    placeholder="""Example:
+Treatment Phase: Initial treatment - 6 weekly treatment regimen
+
+Clinical criteria:
+• Patient must not have previously been treated for this condition in the metastatic setting
+• The condition must have progressed after treatment with only one of: (i) tepotinib, (ii) selpercatinib, (iii) dabrafenib in combination with trametinib
+• Patient must not have received prior treatment with a programmed cell death-1 (PD-1) inhibitor
+• Patient must have a WHO performance status of 0 or 1
+• The condition must not have evidence of an activating epidermal growth factor receptor (EGFR) gene
+• The treatment must not exceed a total of 4 doses under this restriction
+
+Note: In the first few months after start of immunotherapy, some patients can have a transient tumour flare with subsequent disease response.""",
+    key="restriction_input"
+)
+
+# Generate application
+if item_code and restriction_text:
+    st.divider()
+    st.subheader("✅ Authority Application")
+    
+    # Format the application
+    application_text = f"""Hospital Provider Number [{provider_number}]
 {item_code}
-{criteria}"""
+{restriction_text}"""
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.text_area(
+            "Your formatted authority application:",
+            value=application_text,
+            height=400,
+            help="Copy this text and paste it into your authority application system"
+        )
+    
+    with col2:
+        st.write("")
+        st.write("")
+        st.write("")
+        
+        # Copy button (visual only)
+        if st.button("📋 Show Copyable", type="primary"):
+            st.code(application_text, language=None)
+            st.success("✓ Text displayed above - select all and copy")
+        
+        # Download option
+        st.download_button(
+            label="💾 Download",
+            data=application_text,
+            file_name=f"authority_{item_code}.txt",
+            mime="text/plain"
+        )
+        
+        # Clear button
+        if st.button("🗑️ Clear"):
+            st.rerun()
 
-# Search input
-medication_name = st.text_input(
-    "Enter medication name",
-    placeholder="e.g., pembrolizumab, nivolumab, lenalidomide",
-    help="Enter the medication name to search"
-)
-
-item_code_manual = st.text_input(
-    "Or enter PBS item code directly",
-    placeholder="e.g., 12119W",
-    help="Enter PBS item code if you know it"
-)
-
-if st.button("Search", type="primary"):
-    if item_code_manual:
-        # Direct item code lookup
-        with st.spinner(f"Fetching details for {item_code_manual}..."):
-            result = scrape_pbs_item(item_code_manual)
-            
-            if result:
-                st.success(f"Found: {result['drug_name'] or item_code_manual}")
-                
-                st.subheader("Item Details")
-                st.write(f"**Item Code:** {item_code_manual}")
-                st.write(f"**Drug Name:** {result['drug_name']}")
-                st.write(f"**PBS Link:** [{result['url']}]({result['url']})")
-                
-                if result['restrictions']:
-                    st.divider()
-                    st.subheader("Restriction Criteria")
-                    
-                    if len(result['restrictions']) > 1:
-                        # Multiple restrictions - show dropdown
-                        restriction_options = {r['title']: r['text'] for r in result['restrictions']}
-                        
-                        selected_title = st.selectbox(
-                            "Select indication/treatment phase:",
-                            options=list(restriction_options.keys())
-                        )
-                        
-                        selected_text = restriction_options[selected_title]
-                    else:
-                        # Single restriction
-                        selected_text = result['restrictions'][0]['text']
-                    
-                    st.text_area(
-                        "Restriction criteria:",
-                        value=selected_text,
-                        height=300,
-                        disabled=True
-                    )
-                    
-                    st.divider()
-                    st.subheader("Authority Application")
-                    
-                    application_text = format_authority_application(
-                        item_code_manual,
-                        selected_text,
-                        provider_number
-                    )
-                    
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.text_area(
-                            "Copy the text below:",
-                            value=application_text,
-                            height=300
-                        )
-                    with col2:
-                        st.write("")
-                        st.write("")
-                        if st.button("📋 Copy"):
-                            st.code(application_text)
-                            st.success("Text ready to copy!")
-                else:
-                    st.warning("No restriction criteria found on PBS website. The page may have a different structure.")
-                    st.info(f"Please visit the PBS website directly: {result['url']}")
-                    
-                    # Provide manual entry option
-                    manual_criteria = st.text_area(
-                        "Paste criteria from PBS website:",
-                        height=300,
-                        placeholder="Copy and paste the restriction criteria here..."
-                    )
-                    
-                    if manual_criteria:
-                        st.divider()
-                        st.subheader("Authority Application")
-                        
-                        application_text = format_authority_application(
-                            item_code_manual,
-                            manual_criteria,
-                            provider_number
-                        )
-                        
-                        st.text_area(
-                            "Copy the text below:",
-                            value=application_text,
-                            height=300
-                        )
-            else:
-                st.error(f"Could not fetch details for item {item_code_manual}")
-                
-    elif medication_name:
-        st.info("Medication name search coming soon. For now, please use the PBS item code.")
-        st.write("""
-        To find your PBS item code:
-        1. Go to [pbs.gov.au](https://www.pbs.gov.au/)
-        2. Search for your medication
-        3. Find the item code (e.g., 12119W)
-        4. Enter it above
+# Preview section
+if item_code and restriction_text:
+    with st.expander("📊 Preview Application Format"):
+        st.markdown(f"""
+        **Hospital Provider Number:** `{provider_number}`  
+        **PBS Item Code:** `{item_code}`  
+        **Criteria Length:** {len(restriction_text)} characters  
+        **Lines:** {len(restriction_text.splitlines())} lines
         """)
-    else:
-        st.warning("Please enter a medication name or PBS item code")
 
 # Footer
 st.divider()
-st.caption("Data sourced from PBS website | For healthcare professional use")
+st.caption("""
+**For healthcare professional use only** | Data from PBS website (pbs.gov.au)  
+This tool formats authority applications - it does not submit them. Always verify criteria on the official PBS website.
+""")
+
+# Tips in sidebar
+with st.sidebar:
+    st.divider()
+    st.subheader("💡 Tips")
+    st.markdown("""
+    - **Streamlined authority:** Can usually be processed immediately
+    - **Phone authority:** Requires calling 1800 888 333
+    - **Hospital provider number:** This is your facility's number, not your prescriber number
+    - **Save time:** Bookmark common item codes
+    """)
+    
+    with st.expander("Example Item Codes"):
+        st.code("""
+Pembrolizumab:
+• 12119W - NSCLC
+• 11198E - Melanoma
+• 11876G - Head/neck cancer
+
+Nivolumab:
+• 11072K - NSCLC  
+• 11036W - Melanoma
+
+Bendamustine:
+• 10763L - CLL/NHL
+
+Rituximab:
+• 5706G - NHL
+• 5646F - CLL
+        """)
