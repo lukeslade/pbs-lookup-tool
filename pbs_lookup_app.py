@@ -96,18 +96,30 @@ with tab1:
                             if isinstance(items_data, dict) and 'data' in items_data:
                                 all_items = items_data['data']
                                 
-                                # Filter by medication name
+                                # Filter by medication name - case insensitive and partial match
                                 matching_items = []
+                                search_lower = medication_search.lower().strip()
+                                
                                 for item in all_items:
-                                    drug_name = (item.get('li_drug_name', '') or item.get('drug_name', '') or '').lower()
-                                    if medication_search.lower() in drug_name:
+                                    drug_name = (item.get('li_drug_name', '') or item.get('drug_name', '') or '').lower().strip()
+                                    
+                                    # Check if search term is in drug name
+                                    if search_lower in drug_name or drug_name in search_lower:
                                         matching_items.append(item)
+                                
+                                st.write(f"DEBUG: Searched for '{medication_search}' in {len(all_items)} total items")
+                                st.write(f"DEBUG: Found {len(matching_items)} matches")
                                 
                                 if matching_items:
                                     st.session_state.search_results = matching_items
                                     st.success(f"Found {len(matching_items)} item code(s) for {medication_search}")
                                 else:
-                                    st.warning(f"No items found for '{medication_search}'. Try a different spelling or use generic name.")
+                                    st.warning(f"No items found for '{medication_search}'")
+                                    st.info("Try searching for: generic name (e.g., 'lenalidomide' not 'Revlimid'), or try a partial name like 'pembro' for pembrolizumab")
+                                    
+                                    # Show a sample of what's in the database
+                                    sample_drugs = list(set([item.get('li_drug_name', 'Unknown')[:30] for item in all_items[:50]]))
+                                    st.write("Sample drug names in PBS database:", sample_drugs[:10])
                         else:
                             st.error("Could not fetch items from PBS API")
                 else:
