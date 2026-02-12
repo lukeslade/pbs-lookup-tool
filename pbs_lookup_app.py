@@ -82,45 +82,86 @@ with tab1:
                         latest_schedule = sorted(schedules, key=lambda x: x.get('schedule_code', 0), reverse=True)[0]
                         schedule_code = latest_schedule.get('schedule_code')
                         
-                        # Search items
+                        # Search items using filter
                         items_url = f"{api_base}/items"
                         params = {
                             'schedule_code': schedule_code,
-                            'limit': 500
+                            'limit': 100
                         }
                         
-                        items_response = requests.get(items_url, headers=headers, params=params, timeout=30)
+                        # Try using filter for drug name if API supports it
+                        search_term = medication_search.strip()
                         
-                        if items_response.status_code == 200:
-                            items_data = items_response.json()
-                            if isinstance(items_data, dict) and 'data' in items_data:
-                                all_items = items_data['data']
-                                
-                                # Filter by medication name - case insensitive and partial match
-                                matching_items = []
-                                search_lower = medication_search.lower().strip()
-                                
-                                for item in all_items:
-                                    drug_name = (item.get('li_drug_name', '') or item.get('drug_name', '') or '').lower().strip()
+                        # Make multiple searches with different approaches
+                        all_matching_items = []
+                        
+                        # Approach 1: Direct search with limit increased
+                        for page in range(1, 6):  # Check first 5 pages (2500 items)
+                            params_page = {
+                                'schedule_code': schedule_code,
+                                'limit': 500,
+                                'page': page
+                            }
+                            
+                            st.write(f"DEBUG: Fetching page {page}...")
+                            items_response = requests.get(items_url, headers=headers, params=params_page, timeout=30)
+                            
+                            if items_response.status_code == 200:
+                                items_data = items_response.json()
+                                if isinstance(items_data, dict) and 'data' in items_data:
+                                    page_items = items_data['data']
                                     
-                                    # Check if search term is in drug name
-                                    if search_lower in drug_name or drug_name in search_lower:
-                                        matching_items.append(item)
-                                
-                                st.write(f"DEBUG: Searched for '{medication_search}' in {len(all_items)} total items")
-                                st.write(f"DEBUG: Found {len(matching_items)} matches")
-                                
-                                if matching_items:
-                                    st.session_state.search_results = matching_items
-                                    st.success(f"Found {len(matching_items)} item code(s) for {medication_search}")
-                                else:
-                                    st.warning(f"No items found for '{medication_search}'")
-                                    st.info("Try searching for: generic name (e.g., 'lenalidomide' not 'Revlimid'), or try a partial name like 'pembro' for pembrolizumab")
+                                    st.write(f"DEBUG: Page {page} returned {len(page_items)} items")
                                     
-                                    # Show a sample of what's in the database
-                                    sample_drugs = list(set([item.get('li_drug_name', 'Unknown')[:30] for item in all_items[:50]]))
-                                    st.write("Sample drug names in PBS database:", sample_drugs[:10])
+                                    if not page_items:  # No more items
+                                        st.write(f"DEBUG: No items on page {page}, stopping")
+                                        break
+                                    
+                                    # Show sample drug names from this page
+                                    if page == 1:
+                                        sample_names = [item.get('li_drug_name', 'Unknown')[:40] for item in page_items[:10]]
+                                        st.write(f"DEBUG: Sample drug names on page 1: {sample_names}")
+                                    
+                                    # Filter by medication name
+                                    search_lower = search_term.lower()
+                                    page_matches = 0
+                                    for item in page_items:
+                                        drug_name = (item.get('li_drug_name', '') or item.get('drug_name', '') or '').lower().strip()
+                                        
+                                        if search_lower in drug_name:
+                                            all_matching_items.append(item)
+                                            page_matches += 1
+                                    
+                                    st.write(f"DEBUG: Found {page_matches} matches on page {page}")
+                                    
+                                    # If we found matches, we can stop searching
+                                    if len(all_matching_items) > 0 and page > 1:
+                                        st.write(f"DEBUG: Found {len(all_matching_items)} total matches, stopping search")
+                                        break
+                            else:
+                                st.write(f"DEBUG: Page {page} returned status {items_response.status_code}")
+                                break
+                        
+                        st.write(f"DEBUG: Searched {page} page(s) of PBS items")
+                        st.write(f"DEBUG: Found {len(all_matching_items)} matches for '{medication_search}'")
+                        
+                        if all_matching_items:
+                            # Remove duplicates by PBS code
+                            seen = set()
+                            unique_items = []
+                            for item in all_matching_items:
+                                code = item.get('pbs_code')
+                                if code and code not in seen:
+                                    seen.add(code)
+                                    unique_items.append(item)
+                            
+                            st.session_state.search_results = unique_items
+                            st.success(f"Found {len(unique_items)} item code(s) for {medication_search}")
                         else:
+                            st.warning(f"No items found for '{medication_search}'")
+                            st.info("Try: generic name (e.g., 'lenalidomide'), brand name (e.g., 'revlimid'), or partial name (e.g., 'pembro')")
+                        
+                        if items_response.status_code != 200:
                             st.error("Could not fetch items from PBS API")
                 else:
                     st.error("Could not connect to PBS API")
